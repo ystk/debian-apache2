@@ -1,3 +1,64 @@
+apache2 (2.2.16-6+squeeze6) squeeze-security; urgency=high
+
+  * Rebuild with distribution set to squeeze-security.
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 05 Feb 2012 21:58:00 +0100
+
+apache2 (2.2.16-6+squeeze5) squeeze; urgency=high
+
+  * Prevent unintended pattern expansion in some reverse proxy
+    configurations by strictly validating the request-URI. Fixes
+    CVE-2011-3368, CVE-2011-3639, CVE-2011-4317.
+  * CVE-2011-3607: Fix integer overflow in ap_pregsub(), which allowed local
+    privilege escalation.
+  * CVE-2012-0031: Fix client process being able to crash parent process
+    during shutdown.
+  * CVE-2012-0053: Fix an issue in code 400 error responses that could expose
+    "httpOnly" cookies.
+
+ -- Stefan Fritsch <sf@debian.org>  Sat, 04 Feb 2012 17:54:54 +0100
+
+apache2 (2.2.16-6+squeeze4) squeeze; urgency=low
+
+  * Fix CVE-2011-3348: Possible denial of service in mod_proxy_ajp
+    if combined with mod_proxy_balancer.
+  * Make exit code of '/etc/init.d/apache2 status' more LSB compatible.
+    Closes: #613969
+  * Fix typo in init script. Closes: #615866
+  * For multiple instance setups, correctly determine the config dir in the
+    init script if it is called via a start/stop link. Closes: #627061
+  * Add hint in README.Debian about 403 error with mod_dav PUT.
+    Closes: #613438
+  * Add hint in README.Debian about how to increase max number of open
+    files. Closes: #615632
+  * Make it clear in README.multiple-instances that the MPMs are shipped
+    in the apache2.2-bin package.
+  * Tweak patch header to fix "dpatch unapply" with unstable's patch/dpatch.
+
+ -- Stefan Fritsch <sf@debian.org>  Mon, 26 Sep 2011 00:12:23 +0200
+
+apache2 (2.2.16-6+squeeze3) squeeze-security; urgency=high
+
+  * Fix regressions related to range requests introduced by 2.2.16-6+squeeze2.
+    Closes: #639825
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 04 Sep 2011 22:24:42 +0200
+
+apache2 (2.2.16-6+squeeze2) squeeze-security; urgency=high
+
+  * Fix CVE-2011-3192: DoS by high memory usage for a large number of
+    overlapping ranges.
+
+ -- Stefan Fritsch <sf@debian.org>  Mon, 29 Aug 2011 20:23:01 +0200
+
+apache2 (2.2.16-6+squeeze1) stable-security; urgency=high
+
+  * Fix CVE-2011-1176 in apache2-mpm-itk: If NiceValue was set, the default
+    with no AssignUserID was to run as root:root instead of the default Apache
+    user and group. Closes: #618857
+
+ -- Stefan Fritsch <sf@debian.org>  Tue, 22 Mar 2011 21:44:39 +0100
+
 apache2 (2.2.16-6) unstable; urgency=low
 
   * Also add $named to the secondary-init-script example.
