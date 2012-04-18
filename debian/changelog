@@ -1,3 +1,9 @@
+apache2 (2.2.16-6+squeeze7skerlet1) squeeze-security; urgency=high
+
+  * Add .gitkeep cleanup command to debian/rules
+
+ -- Skerlet Project Team <skerlet@swc.toshiba.co.jp> Wed, 18 Apr 2012 15:57:16 +0900
+
 apache2 (2.2.16-6+squeeze7) squeeze-security; urgency=high
 
   * CVE-2012-0216: Remove "Alias /doc /usr/share/doc" from the default virtual
