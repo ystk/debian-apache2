@@ -1,8 +1,31 @@
-apache2 (2.2.16-6+squeeze7skerlet1) squeeze-security; urgency=high
+apache2 (2.2.16-6+squeeze10) squeeze-security; urgency=low
 
-  * Add .gitkeep cleanup command to debian/rules
+  [ Arno Töll ]
+  * Backport disable-ssl-compression.patch from Wheezy. This patch disabled
+    SSL compression upon request by introducing a "Compression on|off"
+    directive to mod_ssl. This is to mitigate impact of CRIME attacks to SSL -
+    which is a browser issue, however.
+    See also Debian bug #674142 and #689936.
 
- -- Skerlet Project Team <skerlet@swc.toshiba.co.jp>  Wed, 18 Apr 2012 15:57:16 +0900
+  [ Stefan Fritsch ]
+  * CVE-2012-4557: mod_proxy_ajp: Remote denial of service (temporary, until
+    mod_proxy_ajp's retry timeout expired).
+
+ -- Stefan Fritsch <sf@debian.org>  Fri, 30 Nov 2012 09:26:36 +0100
+
+apache2 (2.2.16-6+squeeze8) squeeze; urgency=low
+
+  * CVE-2012-2687: mod_negotiation: Escape filenames in variant list to
+    prevent a possible XSS vulnerability for a site where untrusted users
+    can upload files to a location with MultiViews enabled.
+  * Send 408 status instead of 400 if reading of a request fails with a
+    timeout. This allows browsers to retry. Closes: #677086
+  * mod_cache: Prevent Partial Content responses from being cached and served
+    as normal response. Closes: #671204
+  * mpm_itk: Fix an issue where users can sometimes get spurious 403s on
+    persistent connections. Closes: #672333
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 09 Sep 2012 23:08:04 +0200
 
 apache2 (2.2.16-6+squeeze7) squeeze-security; urgency=high
 
