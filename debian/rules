@@ -101,7 +101,10 @@ clean: unpatch
 	rm -rf debian/tmp-worker debian/tmp-prefork
 	dh_clean
 
-build: patch-stamp build-stamp 
+clean-gitkeep:
+	find . -name .gitkeep -exec rm {} \;
+
+build: clean-gitkeep patch-stamp build-stamp 
 build-stamp: patch-stamp mpm-worker mpm-prefork mpm-event mpm-itk
 	for mpm in prefork event itk ; do \
 		if ! diff -u $(BUILD)/$$mpm/mods.list $(BUILD)/worker/mods.list ; then \
