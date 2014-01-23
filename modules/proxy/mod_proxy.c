@@ -365,6 +365,28 @@ static const char *set_balancer_param(proxy_server_conf *conf,
         else
             return "scolonpathdelim must be On|Off";
     }
+    else if (!strcasecmp(key, "failonstatus")) {
+        char *val_split;
+        char *status;
+        char *tok_state;
+
+        val_split = apr_pstrdup(p, val);
+
+        balancer->errstatuses = apr_array_make(p, 1, sizeof(int));
+
+        status = apr_strtok(val_split, ", ", &tok_state);
+        while (status != NULL) {
+            ival = atoi(status);
+            if (ap_is_HTTP_VALID_RESPONSE(ival)) {
+                *(int *)apr_array_push(balancer->errstatuses) = ival;
+            }
+            else {
+                return "failonstatus must be one or more HTTP response codes";
+            }
+            status = apr_strtok(NULL, ", ", &tok_state);
+        }
+
+    }
     else {
         return "unknown Balancer parameter";
     }
@@ -542,6 +564,11 @@ static int proxy_trans(request_rec *r)
          * in proxy_detect
          */
         return OK;
+    }
+
+    if ((r->unparsed_uri[0] == '*' && r->unparsed_uri[1] == '\0')
+        || !r->uri || r->uri[0] != '/') {
+        return DECLINED;
     }
 
     /* XXX: since r->uri has been manipulated already we're not really

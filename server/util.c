@@ -82,6 +82,8 @@
 #define IS_SLASH(s) (s == '/')
 #endif
 
+/* same as APR_SIZE_MAX which doesn't appear until APR 1.3 */
+#define UTIL_SIZE_MAX (~((apr_size_t)0))
 
 /*
  * Examine a field value (such as a media-/content-type) string and return
@@ -366,7 +368,7 @@ AP_DECLARE(char *) ap_pregsub(apr_pool_t *p, const char *input,
     char *dest, *dst;
     char c;
     size_t no;
-    int len;
+    apr_size_t len;
 
     if (!source)
         return NULL;
@@ -387,10 +389,15 @@ AP_DECLARE(char *) ap_pregsub(apr_pool_t *p, const char *input,
 
         if (no > 9) {                /* Ordinary character. */
             if (c == '\\' && (*src == '$' || *src == '&'))
-                c = *src++;
+                src++;
             len++;
         }
         else if (no < nmatch && pmatch[no].rm_so < pmatch[no].rm_eo) {
+            if (UTIL_SIZE_MAX - len <= pmatch[no].rm_eo - pmatch[no].rm_so) {
+                ap_log_error(APLOG_MARK, APLOG_WARNING, 0, NULL,
+                             "integer overflow or out of memory condition." );
+                return NULL;
+            }
             len += pmatch[no].rm_eo - pmatch[no].rm_so;
         }
 
@@ -1589,7 +1596,7 @@ AP_DECLARE(int) ap_unescape_url(char *url)
         return OK;
 }
 
-AP_DECLARE(int) ap_unescape_url_keep2f(char *url)
+AP_DECLARE(int) ap_unescape_url_keep2f_ex(char *url, int decode_2f)
 {
     register int badesc, badpath;
     char *x, *y;
@@ -1617,6 +1624,10 @@ AP_DECLARE(int) ap_unescape_url_keep2f(char *url)
                 if (decoded == '\0') {
                     badpath = 1;
                 }
+                else if (IS_SLASH(decoded) && !decode_2f) {
+                    /* do not decode, just let it go by as-is */
+                    *x = *y;
+                }
                 else {
                     *x = decoded;
                     y += 2;
@@ -1634,6 +1645,11 @@ AP_DECLARE(int) ap_unescape_url_keep2f(char *url)
     else {
         return OK;
     }
+}
+
+AP_DECLARE(int) ap_unescape_url_keep2f(char *url)
+{
+    return ap_unescape_url_keep2f_ex(url, 1);
 }
 
 AP_DECLARE(char *) ap_construct_server(apr_pool_t *p, const char *hostname,

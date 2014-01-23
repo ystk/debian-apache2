@@ -37,8 +37,6 @@ BEGIN {
     B["logfiledir"] = A["logfiledir"]
     B["sysconfdir"] = A["sysconfdir"]
     B["runtimedir"] = A["runtimedir"]
-    B["listen_stmt_1"] = "Listen "A["Port"]
-    B["listen_stmt_2"] = ""
 }
 
 /@@LoadModule@@/ {
@@ -135,7 +133,7 @@ END {
        print ""
        print "#"
        print "# SecureListen: Allows you to securely bind Apache to specific IP addresses "
-       print "# and/or ports."
+       print "# and/or ports (mod_nwssl)."
        print "#"
        print "# Change this to SecureListen on specific IP addresses as shown below to "
        print "# prevent Apache from glomming onto all bound IP addresses (0.0.0.0)"

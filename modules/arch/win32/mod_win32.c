@@ -475,8 +475,11 @@ static apr_status_t ap_cgi_build_command(const char **cmd, const char ***argv,
             memmove(buffer, buffer + 3, bytes -= 3);
         }
 
-        /* Script or executable, that is the question... */
-        if ((bytes >= 2) && (buffer[0] == '#') && (buffer[1] == '!')) {
+        /* Script or executable, that is the question...
+         * we check here also for '! so that .vbs scripts can work as CGI.
+         */
+        if ((bytes >= 2) && ((buffer[0] == '#') || (buffer[0] == '\''))
+                         && (buffer[1] == '!')) {
             /* Assuming file is a script since it starts with a shebang */
             for (i = 2; i < bytes; i++) {
                 if ((buffer[i] == '\r') || (buffer[i] == '\n')) {
@@ -511,7 +514,7 @@ static apr_status_t ap_cgi_build_command(const char **cmd, const char ***argv,
     if (!interpreter) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "%s is not executable; ensure interpreted scripts have "
-                      "\"#!\" first line", *cmd);
+                      "\"#!\" or \"'!\" first line", *cmd);
         return APR_EBADF;
     }
 
@@ -528,13 +531,13 @@ static apr_status_t ap_cgi_build_command(const char **cmd, const char ***argv,
      * application (following the OEM or Ansi code page in effect.)
      */
     for (i = 0; i < elts_arr->nelts; ++i) {
-        if (win_nt && elts[i].key && *elts[i].key
-                && (strncmp(elts[i].key, "HTTP_", 5) == 0
-                 || strncmp(elts[i].key, "SERVER_", 7) == 0
-                 || strncmp(elts[i].key, "REQUEST_", 8) == 0
-                 || strcmp(elts[i].key, "QUERY_STRING") == 0
-                 || strcmp(elts[i].key, "PATH_INFO") == 0
-                 || strcmp(elts[i].key, "PATH_TRANSLATED") == 0)) {
+        if (win_nt && elts[i].key && *elts[i].key && *elts[i].val
+                && !(strncmp(elts[i].key, "REMOTE_", 7) == 0
+                || strcmp(elts[i].key, "GATEWAY_INTERFACE") == 0
+                || strcmp(elts[i].key, "REQUEST_METHOD") == 0
+                || strcmp(elts[i].key, "SERVER_ADDR") == 0
+                || strcmp(elts[i].key, "SERVER_PORT") == 0
+                || strcmp(elts[i].key, "SERVER_PROTOCOL") == 0)) {
             prep_string((const char**) &elts[i].val, r->pool);
         }
     }

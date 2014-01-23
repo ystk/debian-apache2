@@ -271,10 +271,18 @@ static int pass_brigade(apr_bucket_alloc_t *bucket_alloc,
         ap_log_error(APLOG_MARK, APLOG_ERR, status, r->server,
                      "proxy: pass request body failed to %pI (%s)",
                      conn->addr, conn->hostname);
-        if (origin->aborted) { 
+        if (origin->aborted) {
+            const char *ssl_note;
+
+            if (((ssl_note = apr_table_get(origin->notes, "SSL_connect_rv"))
+                != NULL) && (strcmp(ssl_note, "err") == 0)) {
+                return ap_proxyerror(r, HTTP_INTERNAL_SERVER_ERROR,
+                                     "Error during SSL Handshake with"
+                                     " remote server");
+            }
             return APR_STATUS_IS_TIMEUP(status) ? HTTP_GATEWAY_TIME_OUT : HTTP_BAD_GATEWAY;
         }
-        else { 
+        else {
             return HTTP_BAD_REQUEST; 
         }
     }
@@ -1473,14 +1481,13 @@ apr_status_t ap_proxy_http_process_response(apr_pool_t * p, request_rec *r,
         if (apr_date_checkmask(buffer, "HTTP/#.# ###*")) {
             int major, minor;
 
-            if (2 != sscanf(buffer, "HTTP/%u.%u", &major, &minor)) {
-                major = 1;
-                minor = 1;
-            }
+            major = buffer[5] - '0';
+            minor = buffer[7] - '0';
+
             /* If not an HTTP/1 message or
              * if the status line was > 8192 bytes
              */
-            else if ((buffer[5] != '1') || (len >= sizeof(buffer)-1)) {
+            if ((major != 1) || (len >= sizeof(buffer)-1)) {
                 return ap_proxyerror(r, HTTP_BAD_GATEWAY,
                 apr_pstrcat(p, "Corrupt status line returned by remote "
                             "server: ", buffer, NULL));
