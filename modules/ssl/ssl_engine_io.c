@@ -344,6 +344,13 @@ typedef struct {
  * this char_buffer api might seem silly, but we don't need to copy
  * any of this data and we need to remember the length.
  */
+
+/* Copy up to INL bytes from the char_buffer BUFFER into IN.  Note
+ * that due to the strange way this API is designed/used, the
+ * char_buffer object is used to cache a segment of inctx->buffer, and
+ * then this function called to copy (part of) that segment to the
+ * beginning of inctx->buffer.  So the segments to copy cannot be
+ * presumed to be non-overlapping, and memmove must be used. */
 static int char_buffer_read(char_buffer_t *buffer, char *in, int inl)
 {
     if (!buffer->length) {
@@ -352,13 +359,13 @@ static int char_buffer_read(char_buffer_t *buffer, char *in, int inl)
 
     if (buffer->length > inl) {
         /* we have have enough to fill the caller's buffer */
-        memcpy(in, buffer->value, inl);
+        memmove(in, buffer->value, inl);
         buffer->value += inl;
         buffer->length -= inl;
     }
     else {
         /* swallow remainder of the buffer */
-        memcpy(in, buffer->value, buffer->length);
+        memmove(in, buffer->value, buffer->length);
         inl = buffer->length;
         buffer->value = NULL;
         buffer->length = 0;
@@ -742,6 +749,10 @@ static apr_status_t ssl_io_input_getline(bio_filter_in_ctx_t *inctx,
         status = ssl_io_input_read(inctx, buf + offset, &tmplen);
 
         if (status != APR_SUCCESS) {
+            if (APR_STATUS_IS_EAGAIN(status) && (*len > 0)) {
+                /* Save the part of the line we already got */
+                char_buffer_write(&inctx->cbuf, buf, *len);
+            }
             return status;
         }
 
@@ -1058,6 +1069,7 @@ static int ssl_io_filter_connect(ssl_filter_ctx_t *filter_ctx)
             ssl_log_ssl_error(APLOG_MARK, APLOG_INFO, server);
             /* ensure that the SSL structures etc are freed, etc: */
             ssl_filter_io_shutdown(filter_ctx, c, 1);
+            apr_table_set(c->notes, "SSL_connect_rv", "err");
             return HTTP_BAD_GATEWAY;
         }
 
@@ -1075,6 +1087,7 @@ static int ssl_io_filter_connect(ssl_filter_ctx_t *filter_ctx)
                 }
                 /* ensure that the SSL structures etc are freed, etc: */
                 ssl_filter_io_shutdown(filter_ctx, c, 1);
+                apr_table_set(c->notes, "SSL_connect_rv", "err");
                 return HTTP_BAD_GATEWAY;
             }
             X509_free(cert);
@@ -1094,10 +1107,12 @@ static int ssl_io_filter_connect(ssl_filter_ctx_t *filter_ctx)
                               hostname, hostname_note);
                 /* ensure that the SSL structures etc are freed, etc: */
                 ssl_filter_io_shutdown(filter_ctx, c, 1);
+                apr_table_set(c->notes, "SSL_connect_rv", "err");
                 return HTTP_BAD_GATEWAY;
             }
         }
 
+        apr_table_set(c->notes, "SSL_connect_rv", "ok");
         return APR_SUCCESS;
     }
 

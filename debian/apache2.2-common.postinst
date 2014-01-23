@@ -76,6 +76,23 @@ if dpkg --compare-versions "$2" lt 2.2.15-1~0; then
 	a2enmod -q reqtimeout
 fi
 
+if [ -n "$2" ] && dpkg --compare-versions "$2" lt 2.2.22-6~ ; then
+	if [ -e /etc/apache2/httpd.conf ] && [ -f /etc/apache2/httpd.conf ] ; then
+		md5sum="$(md5sum /etc/apache2/httpd.conf | sed -e 's/ .*//')"
+		if [ $md5sum = "d41d8cd98f00b204e9800998ecf8427e" ] ||
+		   [ $md5sum = "a20c3e53dd07836481a5e64bc71e1a33" ]
+		then
+			echo "Remove obsolete configuration file /etc/apache2/httpd.conf"
+			rm -f /etc/apache2/httpd.conf
+		elif [ -d /etc/apache2/conf.d/ ] && [ ! -f /etc/apache2/conf.d/httpd.conf ] ; then
+			echo "Detected legacy httpd.conf - moving file to /etc/apache2/conf.d/httpd.conf"
+			mv /etc/apache2/httpd.conf /etc/apache2/conf.d/httpd.conf
+		fi
+	fi
+	rm -f /etc/apache2/mods-enabled/version.load
+fi
+dpkg-maintscript-helper rm_conffile /etc/apache2/mods-available/version.load 2.2.22-6~ -- "$@"
+
 # The definition of other_vhost_access.log has been moved.
 # Disable the new definition if the admin has changed the old
 # one (as determined by preinst).
@@ -85,11 +102,27 @@ if [ -e /etc/apache2/disable-other-vhost-access-log.dpkg-apache2.2-common ] ; th
 	rm  /etc/apache2/disable-other-vhost-access-log.dpkg-apache2.2-common
 fi
 
+
+# Should run on upgrades from Squeeze or Testing only
+# This code existed in parts 2.2.22-10 already but it wasn't complete.
+# Thus, users of 2.2.22-10 (only in Sid) enter here as well. That's not
+# optimal, but not a problem either.
+if [ -n "$2" ] && dpkg --compare-versions "$2" lt 2.2.22-11; then
+	if [ -d /var/cache/apache2/mod_disk_cache ] ; then
+		echo "Purging old mod_disk_cache cache data in /var/cache/apache2/mod_disk_cache"
+		if [ -d /var/cache/apache2/ ] && [ "$(stat -c '%U' /var/cache/apache2/)" = "www-data" ] ; then
+			 chown root:root /var/cache/apache2/
+		fi
+		rm -rf /var/cache/apache2/mod_disk_cache
+		install -o www-data -g www-data -d /var/cache/apache2/mod_disk_cache/
+	fi
+fi
+
+
 rm -f /etc/apache2/ports.conf.dpkg-apache2.2-common.old
 rm -f /etc/default/apache2.dpkg-apache2.2-common.old
 rm -f /etc/apache2/conf.d/charset.dpkg-apache2.2-common.old
 
-[ -f /etc/apache2/httpd.conf ] || touch /etc/apache2/httpd.conf
 
 #DEBHELPER#
 

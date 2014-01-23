@@ -321,14 +321,7 @@ static process_rec *init_process(int *argc, const char * const * *argv)
 static void usage(process_rec *process)
 {
     const char *bin = process->argv[0];
-    char pad[MAX_STRING_LEN];
-    unsigned i;
-
-    for (i = 0; i < strlen(bin); i++) {
-        pad[i] = ' ';
-    }
-
-    pad[i] = '\0';
+    int pad_len = strlen(bin);
 
 #ifdef SHARED_CORE
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL ,
@@ -340,28 +333,28 @@ static void usage(process_rec *process)
 #endif
 
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
-                 "       %s [-C \"directive\"] [-c \"directive\"]", pad);
+                 "       %*s [-C \"directive\"] [-c \"directive\"]", pad_len, " ");
 
 #ifdef WIN32
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
-                 "       %s [-w] [-k start|restart|stop|shutdown]", pad);
+                 "       %*s [-w] [-k start|restart|stop|shutdown]", pad_len, " ");
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
-                 "       %s [-k install|config|uninstall] [-n service_name]",
-                 pad);
+                 "       %*s [-k install|config|uninstall] [-n service_name]",
+                 pad_len, " ");
 #endif
 #ifdef AP_MPM_WANT_SIGNAL_SERVER
 #ifdef AP_MPM_WANT_SET_GRACEFUL_SHUTDOWN
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
-                 "       %s [-k start|restart|graceful|graceful-stop|stop]",
-                 pad);
+                 "       %*s [-k start|restart|graceful|graceful-stop|stop]",
+                 pad_len, " ");
 #else
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
-                 "       %s [-k start|restart|graceful|stop]",
-                 pad);
+                 "       %*s [-k start|restart|graceful|stop]", pad_len, " ");
 #endif /* AP_MPM_WANT_SET_GRACEFUL_SHUTDOWN */
 #endif
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
-                 "       %s [-v] [-V] [-h] [-l] [-L] [-t] [-S]", pad);
+                 "       %*s [-v] [-V] [-h] [-l] [-L] [-t] [-T] [-S]",
+                 pad_len, " ");
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
                  "Options:");
 
@@ -440,6 +433,8 @@ static void usage(process_rec *process)
                  "  -M                 : a synonym for -t -D DUMP_MODULES");
     ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
                  "  -t                 : run syntax check for config files");
+    ap_log_error(APLOG_MARK, APLOG_STARTUP, 0, NULL,
+                "  -T                 : start without DocumentRoot(s) check");
 
     destroy_and_exit_process(process, 1);
 }
@@ -592,6 +587,10 @@ int main(int argc, const char * const argv[])
             configtestonly = 1;
             break;
 
+       case 'T':
+           ap_document_root_check = 0;
+           break;
+
         case 'S':
             configtestonly = 1;
             new = (char **)apr_array_push(ap_server_config_defines);
@@ -634,6 +633,8 @@ int main(int argc, const char * const argv[])
     if (!server_conf) {
         destroy_and_exit_process(process, 1);
     }
+    /* sort hooks here to make sure pre_config hooks are sorted properly */
+    apr_hook_sort_all();
 
     if (ap_run_pre_config(pconf, plog, ptemp) != OK) {
         ap_log_error(APLOG_MARK, APLOG_STARTUP |APLOG_ERR, 0,
@@ -646,6 +647,11 @@ int main(int argc, const char * const argv[])
     if (rv == OK) {
         ap_fixup_virtual_hosts(pconf, server_conf);
         ap_fini_vhost_config(pconf, server_conf);
+        /*
+         * Sort hooks again because ap_process_config_tree may have added
+         * modules and hence hooks. This happens with mod_perl and modules
+         * written in perl.
+         */
         apr_hook_sort_all();
 
         if (configtestonly) {
@@ -705,6 +711,8 @@ int main(int argc, const char * const argv[])
         if (!server_conf) {
             destroy_and_exit_process(process, 1);
         }
+        /* sort hooks here to make sure pre_config hooks are sorted properly */
+        apr_hook_sort_all();
 
         if (ap_run_pre_config(pconf, plog, ptemp) != OK) {
             ap_log_error(APLOG_MARK, APLOG_STARTUP |APLOG_ERR,
@@ -718,6 +726,11 @@ int main(int argc, const char * const argv[])
         }
         ap_fixup_virtual_hosts(pconf, server_conf);
         ap_fini_vhost_config(pconf, server_conf);
+        /*
+         * Sort hooks again because ap_process_config_tree may have added
+         * modules and hence hooks. This happens with mod_perl and modules
+         * written in perl.
+         */
         apr_hook_sort_all();
         apr_pool_clear(plog);
         if (ap_run_open_logs(pconf, plog, ptemp, server_conf) != OK) {

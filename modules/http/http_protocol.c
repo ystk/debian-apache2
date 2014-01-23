@@ -174,6 +174,9 @@ AP_DECLARE(int) ap_set_keepalive(request_rec *r)
      * body should use the HTTP/1.1 chunked transfer-coding.  In English,
      *
      *   IF  we have not marked this connection as errored;
+     *   and the client isn't expecting 100-continue (PR47087 - more
+     *       input here could be the client continuing when we're
+     *       closing the request).
      *   and the response body has a defined length due to the status code
      *       being 304 or 204, the request method being HEAD, already
      *       having defined Content-Length or Transfer-Encoding: chunked, or
@@ -195,6 +198,7 @@ AP_DECLARE(int) ap_set_keepalive(request_rec *r)
      * Note that the condition evaluation order is extremely important.
      */
     if ((r->connection->keepalive != AP_CONN_CLOSE)
+        && !r->expecting_100
         && ((r->status == HTTP_NOT_MODIFIED)
             || (r->status == HTTP_NO_CONTENT)
             || r->header_only
@@ -844,6 +848,13 @@ AP_DECLARE(void) ap_set_content_type(request_rec *r, const char *ct)
     }
 }
 
+AP_DECLARE(void) ap_set_accept_ranges(request_rec *r)
+{
+    core_dir_config *d = ap_get_module_config(r->per_dir_config, &core_module);
+    apr_table_setn(r->headers_out, "Accept-Ranges",
+                  (d->max_ranges == AP_MAXRANGES_NORANGES) ? "none"
+                                                           : "bytes");
+}
 static const char *add_optional_notes(request_rec *r,
                                       const char *prefix,
                                       const char *key,

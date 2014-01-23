@@ -506,20 +506,41 @@ static const char *log_env_var(request_rec *r, char *a)
 
 static const char *log_cookie(request_rec *r, char *a)
 {
-    const char *cookies;
-    const char *start_cookie;
+    const char *cookies_entry;
 
-    if ((cookies = apr_table_get(r->headers_in, "Cookie"))) {
-        if ((start_cookie = ap_strstr_c(cookies,a))) {
-            char *cookie, *end_cookie;
-            start_cookie += strlen(a) + 1; /* cookie_name + '=' */
-            cookie = apr_pstrdup(r->pool, start_cookie);
-            /* kill everything in cookie after ';' */
-            end_cookie = strchr(cookie, ';');
-            if (end_cookie) {
-                *end_cookie = '\0';
+    /*
+     * This supports Netscape version 0 cookies while being tolerant to
+     * some properties of RFC2109/2965 version 1 cookies:
+     * - case-insensitive match of cookie names
+     * - white space between the tokens
+     * It does not support the following version 1 features:
+     * - quoted strings as cookie values
+     * - commas to separate cookies
+     */
+
+    if ((cookies_entry = apr_table_get(r->headers_in, "Cookie"))) {
+        char *cookie, *last1, *last2;
+        char *cookies = apr_pstrdup(r->pool, cookies_entry);
+
+        while ((cookie = apr_strtok(cookies, ";", &last1))) {
+            char *name = apr_strtok(cookie, "=", &last2);
+            if (name) {
+                char *value;
+                apr_collapse_spaces(name, name);
+
+                if (!strcasecmp(name, a) && (value = apr_strtok(NULL, "=", &last2))) {
+                    char *last;
+                    value += strspn(value, " \t");  /* Move past leading WS */
+                    last = value + strlen(value) - 1;
+                    while (last >= value && apr_isspace(*last)) {
+                       *last = '\0';
+                       --last;
+                    }
+
+                    return ap_escape_logitem(r->pool, value);
+                }
             }
-            return ap_escape_logitem(r->pool, cookie);
+            cookies = NULL;
         }
     }
     return NULL;
@@ -1152,6 +1173,10 @@ static const char *set_buffered_logs_on(cmd_parms *parms, void *dummy, int flag)
         ap_log_set_writer_init(ap_buffered_log_writer_init);
         ap_log_set_writer(ap_buffered_log_writer);
     }
+    else {
+        ap_log_set_writer_init(ap_default_log_writer_init);
+        ap_log_set_writer(ap_default_log_writer);
+    }
     return NULL;
 }
 static const command_rec config_log_cmds[] =
@@ -1523,6 +1548,11 @@ static int log_pre_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp)
         log_pfn_register(p, "s", log_status, 1);
         log_pfn_register(p, "R", log_handler, 1);
     }
+
+    /* reset to default conditions */
+    ap_log_set_writer_init(ap_default_log_writer_init);
+    ap_log_set_writer(ap_default_log_writer);
+    buffered_logs = 0;
 
     return OK;
 }

@@ -2347,15 +2347,22 @@ static void do_expand_env(data_item *env, rewrite_ctx *ctx)
 
     while (env) {
         name = do_expand(env->data, ctx, NULL);
-        if ((val = ap_strchr(name, ':')) != NULL) {
-            *val++ = '\0';
-        } else {
-            val = "";
+        if (*name == '!') {
+            name++;
+            apr_table_unset(ctx->r->subprocess_env, name);
+            rewritelog((ctx->r, 5, NULL, "unsetting env variable '%s'", name));
         }
+        else {
+            if ((val = ap_strchr(name, ':')) != NULL) {
+                *val++ = '\0';
+            } else {
+                val = "";
+            }
 
-        apr_table_set(ctx->r->subprocess_env, name, val);
-        rewritelog((ctx->r, 5, NULL, "setting env variable '%s' to '%s'",
-                    name, val));
+            apr_table_set(ctx->r->subprocess_env, name, val);
+            rewritelog((ctx->r, 5, NULL, "setting env variable '%s' to '%s'",
+                        name, val));
+        }
 
         env = env->next;
     }
@@ -2971,7 +2978,7 @@ static const char *cmd_rewritemap(cmd_parms *cmd, void *dconf, const char *a1,
         newmap->cachename = NULL;
         newmap->func      = (char *(*)(request_rec *,char *))
                             apr_hash_get(mapfunc_hash, a2+4, strlen(a2+4));
-        if ((sconf->state == ENGINE_ENABLED) && (newmap->func == NULL)) {
+        if (newmap->func == NULL) {
             return apr_pstrcat(cmd->pool, "RewriteMap: internal map not found:",
                                a2+4, NULL);
         }
@@ -2992,7 +2999,7 @@ static const char *cmd_rewritemap(cmd_parms *cmd, void *dconf, const char *a1,
     newmap->fpin  = NULL;
     newmap->fpout = NULL;
 
-    if (newmap->checkfile && (sconf->state == ENGINE_ENABLED)
+    if (newmap->checkfile
         && (apr_stat(&st, newmap->checkfile, APR_FINFO_MIN,
                      cmd->pool) != APR_SUCCESS)) {
         return apr_pstrcat(cmd->pool,
@@ -3180,7 +3187,7 @@ static const char *cmd_rewritecond(cmd_parms *cmd, void *in_dconf,
     }
 
     /* determine the pattern type */
-    newcond->ptype = 0;
+    newcond->ptype = CONDPAT_REGEX;
     if (*a2 && a2[1]) {
         if (!a2[2] && *a2 == '-') {
             switch (a2[1]) {
@@ -4256,6 +4263,11 @@ static int hook_uri2file(request_rec *r)
      *  just stop operating now.
      */
     if (conf->server != r->server) {
+        return DECLINED;
+    }
+
+    if ((r->unparsed_uri[0] == '*' && r->unparsed_uri[1] == '\0')
+        || !r->uri || r->uri[0] != '/') {
         return DECLINED;
     }
 

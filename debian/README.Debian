@@ -48,7 +48,8 @@ envvars
 	This contains environment variables that may be used in the
 	configuration. Some settings, like user and pid file, need to
 	go in here so that other scripts can use them. It can also
-	be used to change some default settings used by apache2ctl.
+	be used to change some default settings used by apache2ctl,
+	including the ulimit value for the max number of open files.
 	Here is also the default LANG=C setting that can be changed
 	to a different language.
 
@@ -60,9 +61,12 @@ conf.d/
 	# Include generic snippets of statements
 	Include /etc/apache2/conf.d
 
+	Future versions of the package will narrow this down to only include
+	files that end with ".conf".
+
 	This is a good place to add additional configuration
 	directives. Packages should not use configuration
-	files that start with 'local-' or end with '.local'.
+	files that start with 'local-' or end with '.local.conf'.
 	The local administrator can use these filenames to make
 	sure that there are no conflicts with files provided by
 	packages.
@@ -76,7 +80,9 @@ conf.d/
 
 httpd.conf
 
-	Empty file.
+	This file used to be included by apache2.conf but is not anymore.
+	If it contained local modifications it has been moved to
+	conf.d/httpd.conf during upgrade.
 
 magic
 
@@ -128,8 +134,13 @@ sites-enabled/
 The Include directive ignores files with names that
 
 - do not begin with a letter or number
-- contain a character that is neither letter nor number nor _-.
+- contain a character that is neither letter nor number nor _-:.
 - contain .dpkg
+
+In a future version of the package, this special handling will be removed.
+Instead, the relevant Include statements (especially for sites-enabled and
+conf.d) in the configuration will be modified to only include files that end
+with ".conf".
 
 Other files
 -----------
@@ -391,9 +402,3 @@ later use.
 
 Apache also needs write permission to the directory containing the file, in
 order to replace it atomically.
-
-12) How to increase the ulimit for the max number of open files?
-
-Add the following line to /etc/apache2/envvars:
-
-	APACHE_ULIMIT_MAX_FILES='ulimit -n 65536'

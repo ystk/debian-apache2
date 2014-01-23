@@ -94,7 +94,7 @@
           '<code>0</code>' çıktılanır.</td></tr>
 <tr class="odd"><td><code>%{<var>Fesmekan</var>}C</code></td>
         <td>İstek içinde sunucuya gönderilen <var>Fesmekan</var> çerezinin
-          içeriği.</td></tr>
+          içeriği. Sadece 0. sürüm çerezler tam olarak desteklenir.</td></tr>
 <tr><td><code>%D</code></td>
         <td>Mikrosaniye cinsinden isteği sunmak için harcanan zaman.</td></tr>
 <tr class="odd"><td><code>%{<var>FALANCA</var>}e</code></td>
@@ -347,7 +347,8 @@ kullanılır.</td></tr>
       <dt><var>borulu-süreç</var></dt>
       <dd>"<code>|</code>" boru karakteri ile öncelenmiş olarak günlük
         bilgisini standart girdisinden kabul edecek sürecin ismi (veya komut
-        satırı).
+        satırı) Daha fazla bilgi için <a href="../logs.html#piped">borulu
+        günlükler</a> ile ilgili ek bilgilere bakın.
 
       <div class="warning"><h3>Güvenlik:</h3>
       <p>Bir borulu süreç kullanılmışsa, süreç <code class="program"><a href="../programs/httpd.html">httpd</a></code>’yi
@@ -475,6 +476,6 @@ kullanılır.</td></tr>
 <a href="../ko/mod/mod_log_config.html" hreflang="ko" rel="alternate" title="Korean">&nbsp;ko&nbsp;</a> |
 <a href="../tr/mod/mod_log_config.html" title="Türkçe">&nbsp;tr&nbsp;</a></p>
 </div><div id="footer">
-<p class="apache">Copyright 2009 The Apache Software Foundation.<br /><a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a> altında lisanslıdır.</p>
+<p class="apache">Copyright 2012 The Apache Software Foundation.<br /><a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a> altında lisanslıdır.</p>
 <p class="menu"><a href="../mod/">Modüller</a> | <a href="../mod/directives.html">Yönergeler</a> | <a href="../faq/">SSS</a> | <a href="../glossary.html">Terimler</a> | <a href="../sitemap.html">Site Haritası</a></p></div>
 </body></html>

@@ -386,6 +386,8 @@ struct proxy_balancer {
 #endif
     void            *context;   /* general purpose storage */
     int             scolonsep;  /* true if ';' seps sticky session paths */
+
+    apr_array_header_t *errstatuses; /* statuses to force members into error */
 };
 
 struct proxy_balancer_method {
@@ -637,13 +639,6 @@ PROXY_DECLARE(int) ap_proxy_post_request(proxy_worker *worker,
                                          proxy_balancer *balancer,
                                          request_rec *r,
                                          proxy_server_conf *conf);
-
-/**
- * Request status function
- * @param status   status of proxy request
- * @return         OK or DECLINED
- */
- PROXY_DECLARE(int) ap_proxy_request_status(int *status, request_rec *r);
 
 /**
  * Deternime backend hostname and port
