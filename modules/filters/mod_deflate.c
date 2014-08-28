@@ -37,6 +37,7 @@
 #include "httpd.h"
 #include "http_config.h"
 #include "http_log.h"
+#include "http_core.h"
 #include "apr_lib.h"
 #include "apr_strings.h"
 #include "apr_general.h"
@@ -45,11 +46,17 @@
 #include "http_request.h"
 #define APR_WANT_STRFUNC
 #include "apr_want.h"
+#include "mod_ssl.h"
 
 #include "zlib.h"
 
+#include <limits.h>     /* for INT_MAX */
+
 static const char deflateFilterName[] = "DEFLATE";
 module AP_MODULE_DECLARE_DATA deflate_module;
+
+#define AP_INFLATE_RATIO_LIMIT 200
+#define AP_INFLATE_RATIO_BURST 3
 
 typedef struct deflate_filter_config_t
 {
@@ -61,6 +68,12 @@ typedef struct deflate_filter_config_t
     char *note_input_name;
     char *note_output_name;
 } deflate_filter_config;
+
+typedef struct deflate_dirconf_t {
+    apr_off_t inflate_limit;
+    int ratio_limit,
+        ratio_burst;
+} deflate_dirconf_t;
 
 /* RFC 1952 Section 2.3 defines the gzip header:
  *
@@ -83,6 +96,7 @@ static const char deflate_magic[2] = { '\037', '\213' };
 #define DEFAULT_MEMLEVEL 9
 #define DEFAULT_BUFFERSIZE 8096
 
+static APR_OPTIONAL_FN_TYPE(ssl_var_lookup) *mod_deflate_ssl_var = NULL;
 
 /* Check whether a request is gzipped, so we can un-gzip it.
  * If a request has multiple encodings, we need the gzip
@@ -117,7 +131,7 @@ static int check_gzip(request_rec *r, apr_table_t *hdrs1, apr_table_t *hdrs2)
             }
         }
         else if (ap_strchr_c(encoding, ',') != NULL) {
-            /* If the outermost encoding isn't gzip, there's nowt
+            /* If the outermost encoding isn't gzip, there's nothing
              * we can do.  So only check the last non-identity token
              */
             char *new_encoding = apr_pstrdup(r->pool, encoding);
@@ -157,6 +171,15 @@ static int check_gzip(request_rec *r, apr_table_t *hdrs1, apr_table_t *hdrs2)
             }
         }
     }
+    /*
+     * If we have dealt with the headers above but content_encoding was set
+     * before sync it with the new value in the hdrs table as
+     * r->content_encoding takes precedence later on in the http_header_filter
+     * and hence would destroy what we have just set in the hdrs table.
+     */
+    if (hdrs && r->content_encoding) {
+        r->content_encoding = apr_table_get(hdrs, "Content-Encoding");
+    }
     return found;
 }
 
@@ -191,6 +214,14 @@ static void *create_deflate_server_config(apr_pool_t *p, server_rec *s)
     c->compressionlevel = DEFAULT_COMPRESSION;
 
     return c;
+}
+
+static void *create_deflate_dirconf(apr_pool_t *p, char *dummy)
+{
+    deflate_dirconf_t *dc = apr_pcalloc(p, sizeof(*dc));
+    dc->ratio_limit = AP_INFLATE_RATIO_LIMIT;
+    dc->ratio_burst = AP_INFLATE_RATIO_BURST;
+    return dc;
 }
 
 static const char *deflate_set_window_size(cmd_parms *cmd, void *dummy,
@@ -284,6 +315,55 @@ static const char *deflate_set_compressionlevel(cmd_parms *cmd, void *dummy,
     return NULL;
 }
 
+
+static const char *deflate_set_inflate_limit(cmd_parms *cmd, void *dirconf,
+                                      const char *arg)
+{
+    deflate_dirconf_t *dc = (deflate_dirconf_t*) dirconf;
+    char *errp;
+
+    if (APR_SUCCESS != apr_strtoff(&dc->inflate_limit, arg, &errp, 10)) {
+        return "DeflateInflateLimitRequestBody is not parsable.";
+    }
+    if (*errp || dc->inflate_limit < 0) {
+        return "DeflateInflateLimitRequestBody requires a non-negative integer.";
+    }
+
+    return NULL;
+}
+
+static const char *deflate_set_inflate_ratio_limit(cmd_parms *cmd,
+                                                   void *dirconf,
+                                                   const char *arg)
+{
+    deflate_dirconf_t *dc = (deflate_dirconf_t*) dirconf;
+    int i;
+
+    i = atoi(arg);
+    if (i <= 0)
+        return "DeflateInflateRatioLimit must be positive";
+
+    dc->ratio_limit = i;
+
+    return NULL;
+}
+
+static const char *deflate_set_inflate_ratio_burst(cmd_parms *cmd,
+                                                   void *dirconf,
+                                                   const char *arg)
+{
+    deflate_dirconf_t *dc = (deflate_dirconf_t*) dirconf;
+    int i;
+
+    i = atoi(arg);
+    if (i <= 0)
+        return "DeflateInflateRatioBurst must be positive";
+
+    dc->ratio_burst = i;
+
+    return NULL;
+}
+
 typedef struct deflate_ctx_t
 {
     z_stream stream;
@@ -293,7 +373,15 @@ typedef struct deflate_ctx_t
     int (*libz_end_func)(z_streamp);
     unsigned char *validation_buffer;
     apr_size_t validation_buffer_length;
-    int inflate_init;
+    char header[10]; /* sizeof(gzip_header) */
+    apr_size_t header_len;
+    int zlib_flags;
+    int ratio_hits;
+    apr_off_t inflate_total;
+    unsigned int consume_pos,
+                 consume_len;
+    unsigned int filter_init:1;
+    unsigned int done:1;
 } deflate_ctx;
 
 /* Number of validation bytes (CRC and length) after the compressed data */
@@ -373,6 +461,70 @@ static apr_status_t deflate_ctx_cleanup(void *data)
     return APR_SUCCESS;
 }
 
+/* ETag must be unique among the possible representations, so a change
+ * to content-encoding requires a corresponding change to the ETag.
+ * This routine appends -transform (e.g., -gzip) to the entity-tag
+ * value inside the double-quotes if an ETag has already been set
+ * and its value already contains double-quotes. PR 39727
+ */
+static void deflate_check_etag(request_rec *r, const char *transform)
+{
+    const char *etag = apr_table_get(r->headers_out, "ETag");
+    apr_size_t etaglen;
+
+    if ((etag && ((etaglen = strlen(etag)) > 2))) {
+        if (etag[etaglen - 1] == '"') {
+            apr_size_t transformlen = strlen(transform);
+            char *newtag = apr_palloc(r->pool, etaglen + transformlen + 2);
+            char *d = newtag;
+            char *e = d + etaglen - 1;
+            const char *s = etag;
+
+            for (; d < e; ++d, ++s) {
+                *d = *s;          /* copy etag to newtag up to last quote */
+            }
+            *d++ = '-';           /* append dash to newtag */
+            s = transform;
+            e = d + transformlen;
+            for (; d < e; ++d, ++s) {
+                *d = *s;          /* copy transform to newtag */
+            }
+            *d++ = '"';           /* append quote to newtag */
+            *d   = '\0';          /* null terminate newtag */
+
+            apr_table_setn(r->headers_out, "ETag", newtag);
+        }
+    }
+}
+
+/* Check whether the (inflate) ratio exceeds the configured limit/burst. */
+static int check_ratio(request_rec *r, deflate_ctx *ctx,
+                       const deflate_dirconf_t *dc)
+{
+    if (ctx->stream.total_in) {
+        int ratio = ctx->stream.total_out / ctx->stream.total_in;
+        if (ratio < dc->ratio_limit) {
+            ctx->ratio_hits = 0;
+        }
+        else if (++ctx->ratio_hits > dc->ratio_burst) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int have_ssl_compression(request_rec *r)
+{
+    const char *comp;
+    if (mod_deflate_ssl_var == NULL)
+        return 0;
+    comp = mod_deflate_ssl_var(r->pool, r->server, r->connection, r,
+                               "SSL_COMPRESS_METHOD");
+    if (comp == NULL || *comp == '\0' || strcmp(comp, "NULL") == 0)
+        return 0;
+    return 1;
+}
+
 static apr_status_t deflate_out_filter(ap_filter_t *f,
                                        apr_bucket_brigade *bb)
 {
@@ -380,11 +532,13 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
     request_rec *r = f->r;
     deflate_ctx *ctx = f->ctx;
     int zRC;
+    apr_size_t len = 0, blen;
+    const char *data;
     deflate_filter_config *c;
 
     /* Do nothing if asked to filter nothing. */
     if (APR_BRIGADE_EMPTY(bb)) {
-        return ap_pass_brigade(f->next, bb);
+        return APR_SUCCESS;
     }
 
     c = ap_get_module_config(r->server->module_config,
@@ -400,22 +554,73 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
         char *token;
         const char *encoding;
 
-        /* only work on main request/no subrequests */
-        if (r->main != NULL) {
+        if (have_ssl_compression(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                          "Compression enabled at SSL level; not compressing "
+                          "at HTTP level.");
             ap_remove_output_filter(f);
             return ap_pass_brigade(f->next, bb);
         }
 
-        /* some browsers might have problems, so set no-gzip
-         * (with browsermatch) for them
+        /* We have checked above that bb is not empty */
+        e = APR_BRIGADE_LAST(bb);
+        if (APR_BUCKET_IS_EOS(e)) {
+            /*
+             * If we already know the size of the response, we can skip
+             * compression on responses smaller than the compression overhead.
+             * However, if we compress, we must initialize deflate_out before
+             * calling ap_pass_brigade() for the first time.  Otherwise the
+             * headers will be sent to the client without
+             * "Content-Encoding: gzip".
+             */
+            e = APR_BRIGADE_FIRST(bb);
+            while (1) {
+                apr_status_t rc;
+                if (APR_BUCKET_IS_EOS(e)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                                  "Not compressing very small response of %"
+                                  APR_SIZE_T_FMT " bytes", len);
+                    ap_remove_output_filter(f);
+                    return ap_pass_brigade(f->next, bb);
+                }
+                if (APR_BUCKET_IS_METADATA(e)) {
+                    e = APR_BUCKET_NEXT(e);
+                    continue;
+                }
+
+                rc = apr_bucket_read(e, &data, &blen, APR_BLOCK_READ);
+                if (rc != APR_SUCCESS)
+                    return rc;
+                len += blen;
+                /* 50 is for Content-Encoding and Vary headers and ETag suffix */
+                if (len > sizeof(gzip_header) + VALIDATION_SIZE + 50)
+                    break;
+
+                e = APR_BUCKET_NEXT(e);
+            }
+        }
+
+        ctx = f->ctx = apr_pcalloc(r->pool, sizeof(*ctx));
+
+        /*
+         * Only work on main request, not subrequests,
+         * that are not a 204 response with no content
+         * and are not tagged with the no-gzip env variable
+         * and not a partial response to a Range request.
          */
-        if (apr_table_get(r->subprocess_env, "no-gzip")) {
-            ap_remove_output_filter(f);
-            return ap_pass_brigade(f->next, bb);
-        }
-
-        /* We can't operate on Content-Ranges */
-        if (apr_table_get(r->headers_out, "Content-Range") != NULL) {
+        if ((r->main != NULL) || (r->status == HTTP_NO_CONTENT) ||
+            apr_table_get(r->subprocess_env, "no-gzip") ||
+            apr_table_get(r->headers_out, "Content-Range")
+           ) {
+            if (APLOG_R_IS_LEVEL(r, APLOG_TRACE1)) {
+                const char *reason =
+                    (r->main != NULL)                           ? "subrequest" :
+                    (r->status == HTTP_NO_CONTENT)              ? "no content" :
+                    apr_table_get(r->subprocess_env, "no-gzip") ? "no-gzip" :
+                    "content-range";
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                              "Not compressing (%s)", reason);
+            }
             ap_remove_output_filter(f);
             return ap_pass_brigade(f->next, bb);
         }
@@ -429,6 +634,8 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
             const char *env_value = apr_table_get(r->subprocess_env,
                                                   "gzip-only-text/html");
             if ( env_value && (strcmp(env_value,"1") == 0) ) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                              "Not compressing, (gzip-only-text/html)");
                 ap_remove_output_filter(f);
                 return ap_pass_brigade(f->next, bb);
             }
@@ -465,7 +672,9 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
                 /* stolen from mod_negotiation: */
                 if (strcmp(token, "identity") && strcmp(token, "7bit") &&
                     strcmp(token, "8bit") && strcmp(token, "binary")) {
-
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                                  "Not compressing (content-encoding already "
+                                  " set: %s)", token);
                     ap_remove_output_filter(f);
                     return ap_pass_brigade(f->next, bb);
                 }
@@ -501,7 +710,7 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
                 /* skip parameters, XXX: ;q=foo evaluation? */
                 while (*accepts == ';') {
                     ++accepts;
-                    token = ap_get_token(r->pool, &accepts, 1);
+                    ap_get_token(r->pool, &accepts, 1);
                 }
 
                 /* retrieve next token */
@@ -513,53 +722,62 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
 
             /* No acceptable token found. */
             if (token == NULL || token[0] == '\0') {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                              "Not compressing (no Accept-Encoding: gzip)");
                 ap_remove_output_filter(f);
                 return ap_pass_brigade(f->next, bb);
             }
         }
-
-        /* For a 304 or 204 response there is no entity included in
-         * the response and hence nothing to deflate. */
-        if (r->status == HTTP_NOT_MODIFIED || r->status == HTTP_NO_CONTENT) {
-            ap_remove_output_filter(f);
-            return ap_pass_brigade(f->next, bb);
+        else {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                          "Forcing compression (force-gzip set)");
         }
 
-        /* We're cool with filtering this. */
-        ctx = f->ctx = apr_pcalloc(r->pool, sizeof(*ctx));
-        ctx->bb = apr_brigade_create(r->pool, f->c->bucket_alloc);
-        ctx->buffer = apr_palloc(r->pool, c->bufferSize);
-        ctx->libz_end_func = deflateEnd;
-
-        zRC = deflateInit2(&ctx->stream, c->compressionlevel, Z_DEFLATED,
-                           c->windowSize, c->memlevel,
-                           Z_DEFAULT_STRATEGY);
-
-        if (zRC != Z_OK) {
-            deflateEnd(&ctx->stream);
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                          "unable to init Zlib: "
-                          "deflateInit2 returned %d: URL %s",
-                          zRC, r->uri);
-            /*
-             * Remove ourselves as it does not make sense to return:
-             * We are not able to init libz and pass data down the chain
-             * uncompressed.
-             */
-            ap_remove_output_filter(f);
-            return ap_pass_brigade(f->next, bb);
-        }
-        /*
-         * Register a cleanup function to ensure that we cleanup the internal
-         * libz resources.
+        /* At this point we have decided to filter the content. Let's try to
+         * to initialize zlib (except for 304 responses, where we will only
+         * send out the headers).
          */
-        apr_pool_cleanup_register(r->pool, ctx, deflate_ctx_cleanup,
-                                  apr_pool_cleanup_null);
 
-        /* add immortal gzip header */
-        e = apr_bucket_immortal_create(gzip_header, sizeof gzip_header,
-                                       f->c->bucket_alloc);
-        APR_BRIGADE_INSERT_TAIL(ctx->bb, e);
+        if (r->status != HTTP_NOT_MODIFIED) {
+            ctx->bb = apr_brigade_create(r->pool, f->c->bucket_alloc);
+            ctx->buffer = apr_palloc(r->pool, c->bufferSize);
+            ctx->libz_end_func = deflateEnd;
+
+            zRC = deflateInit2(&ctx->stream, c->compressionlevel, Z_DEFLATED,
+                               c->windowSize, c->memlevel,
+                               Z_DEFAULT_STRATEGY);
+
+            if (zRC != Z_OK) {
+                deflateEnd(&ctx->stream);
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01383)
+                              "unable to init Zlib: "
+                              "deflateInit2 returned %d: URL %s",
+                              zRC, r->uri);
+                /*
+                 * Remove ourselves as it does not make sense to return:
+                 * We are not able to init libz and pass data down the chain
+                 * uncompressed.
+                 */
+                ap_remove_output_filter(f);
+                return ap_pass_brigade(f->next, bb);
+            }
+            /*
+             * Register a cleanup function to ensure that we cleanup the internal
+             * libz resources.
+             */
+            apr_pool_cleanup_register(r->pool, ctx, deflate_ctx_cleanup,
+                                      apr_pool_cleanup_null);
+
+            /* Set the filter init flag so subsequent invocations know we are
+             * active.
+             */
+            ctx->filter_init = 1;
+        }
+
+        /*
+         * Zlib initialization worked, so we can now change the important
+         * content metadata before sending the response out.
+         */
 
         /* If the entire Content-Encoding is "identity", we can replace it. */
         if (!encoding || !strcasecmp(encoding, "identity")) {
@@ -568,19 +786,39 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
         else {
             apr_table_mergen(r->headers_out, "Content-Encoding", "gzip");
         }
+        /* Fix r->content_encoding if it was set before */
+        if (r->content_encoding) {
+            r->content_encoding = apr_table_get(r->headers_out,
+                                                "Content-Encoding");
+        }
         apr_table_unset(r->headers_out, "Content-Length");
         apr_table_unset(r->headers_out, "Content-MD5");
+        deflate_check_etag(r, "gzip");
+
+        /* For a 304 response, only change the headers */
+        if (r->status == HTTP_NOT_MODIFIED) {
+            ap_remove_output_filter(f);
+            return ap_pass_brigade(f->next, bb);
+        }
+
+        /* add immortal gzip header */
+        e = apr_bucket_immortal_create(gzip_header, sizeof gzip_header,
+                                       f->c->bucket_alloc);
+        APR_BRIGADE_INSERT_TAIL(ctx->bb, e);
 
         /* initialize deflate output buffer */
         ctx->stream.next_out = ctx->buffer;
         ctx->stream.avail_out = c->bufferSize;
+    } else if (!ctx->filter_init) {
+        /* Hmm.  We've run through the filter init before as we have a ctx,
+         * but we never initialized.  We probably have a dangling ref.  Bail.
+         */
+        return ap_pass_brigade(f->next, bb);
     }
 
     while (!APR_BRIGADE_EMPTY(bb))
     {
-        const char *data;
         apr_bucket *b;
-        apr_size_t len;
 
         /*
          * Optimization: If we are a HEAD request and bytes_sent is not zero
@@ -612,7 +850,7 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
             b = apr_bucket_pool_create(buf, VALIDATION_SIZE, r->pool,
                                        f->c->bucket_alloc);
             APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01384)
                           "Zlib: Compressed %ld to %ld : URL %s",
                           ctx->stream.total_in, ctx->stream.total_out, r->uri);
 
@@ -664,6 +902,9 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
             zRC = flush_libz_buffer(ctx, c, f->c->bucket_alloc, deflate,
                                     Z_SYNC_FLUSH, NO_UPDATE_CRC);
             if (zRC != Z_OK) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01385)
+                              "Zlib error %d flushing zlib output buffer (%s)",
+                              zRC, ctx->stream.msg);
                 return APR_EGENERAL;
             }
 
@@ -689,6 +930,14 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
 
         /* read */
         apr_bucket_read(e, &data, &len, APR_BLOCK_READ);
+        if (!len) {
+            apr_bucket_delete(e);
+            continue;
+        }
+        if (len > INT_MAX) {
+            apr_bucket_split(e, INT_MAX);
+            apr_bucket_read(e, &data, &len, APR_BLOCK_READ);
+        }
 
         /* This crc32 function is from zlib. */
         ctx->crc = crc32(ctx->crc, (const Bytef *)data, len);
@@ -720,6 +969,9 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
             zRC = deflate(&(ctx->stream), Z_NO_FLUSH);
 
             if (zRC != Z_OK) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01386)
+                              "Zlib error %d deflating data (%s)", zRC,
+                              ctx->stream.msg);
                 return APR_EGENERAL;
             }
         }
@@ -728,6 +980,96 @@ static apr_status_t deflate_out_filter(ap_filter_t *f,
     }
 
     apr_brigade_cleanup(bb);
+    return APR_SUCCESS;
+}
+
+static apr_status_t consume_zlib_flags(deflate_ctx *ctx,
+                                       const char **data, apr_size_t *len)
+{
+    if ((ctx->zlib_flags & EXTRA_FIELD)) {
+        /* Consume 2 bytes length prefixed data. */
+        if (ctx->consume_pos == 0) {
+            if (!*len) {
+                return APR_INCOMPLETE;
+            }
+            ctx->consume_len = (unsigned int)**data;
+            ctx->consume_pos++;
+            ++*data;
+            --*len;
+        }
+        if (ctx->consume_pos == 1) {
+            if (!*len) {
+                return APR_INCOMPLETE;
+            }
+            ctx->consume_len += ((unsigned int)**data) << 8;
+            ctx->consume_pos++;
+            ++*data;
+            --*len;
+        }
+        if (*len < ctx->consume_len) {
+            ctx->consume_len -= *len;
+            *len = 0;
+            return APR_INCOMPLETE;
+        }
+        *data += ctx->consume_len;
+        *len -= ctx->consume_len;
+
+        ctx->consume_len = ctx->consume_pos = 0;
+        ctx->zlib_flags &= ~EXTRA_FIELD;
+    }
+
+    if ((ctx->zlib_flags & ORIG_NAME)) {
+        /* Consume nul terminated string. */
+        while (*len && **data) {
+            ++*data;
+            --*len;
+        }
+        if (!*len) {
+            return APR_INCOMPLETE;
+        }
+        /* .. and nul. */
+        ++*data;
+        --*len;
+
+        ctx->zlib_flags &= ~ORIG_NAME;
+    }
+
+    if ((ctx->zlib_flags & COMMENT)) {
+        /* Consume nul terminated string. */
+        while (*len && **data) {
+            ++*data;
+            --*len;
+        }
+        if (!*len) {
+            return APR_INCOMPLETE;
+        }
+        /* .. and nul. */
+        ++*data;
+        --*len;
+
+        ctx->zlib_flags &= ~COMMENT;
+    }
+
+    if ((ctx->zlib_flags & HEAD_CRC)) {
+        /* Consume CRC16 (2 octets). */
+        if (ctx->consume_pos == 0) {
+            if (!*len) {
+                return APR_INCOMPLETE;
+            }
+            ctx->consume_pos++;
+            ++*data;
+            --*len;
+        }
+        if (!*len) {
+            return APR_INCOMPLETE;
+        }
+        ++*data;
+        --*len;
+        
+        ctx->consume_pos = 0;
+        ctx->zlib_flags &= ~HEAD_CRC;
+    }
+
     return APR_SUCCESS;
 }
 
@@ -744,6 +1086,8 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
     int zRC;
     apr_status_t rv;
     deflate_filter_config *c;
+    deflate_dirconf_t *dc;
+    apr_off_t inflate_limit;
 
     /* just get out of the way of things we don't want. */
     if (mode != AP_MODE_READBYTES) {
@@ -751,63 +1095,100 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
     }
 
     c = ap_get_module_config(r->server->module_config, &deflate_module);
+    dc = ap_get_module_config(r->per_dir_config, &deflate_module);
 
-    if (!ctx) {
-        char deflate_hdr[10];
+    if (!ctx || ctx->header_len < sizeof(ctx->header)) {
         apr_size_t len;
 
-        /* only work on main request/no subrequests */
-        if (!ap_is_initial_req(r)) {
-            ap_remove_input_filter(f);
-            return ap_get_brigade(f->next, bb, mode, block, readbytes);
+        if (!ctx) {
+            /* only work on main request/no subrequests */
+            if (!ap_is_initial_req(r)) {
+                ap_remove_input_filter(f);
+                return ap_get_brigade(f->next, bb, mode, block, readbytes);
+            }
+
+            /* We can't operate on Content-Ranges */
+            if (apr_table_get(r->headers_in, "Content-Range") != NULL) {
+                ap_remove_input_filter(f);
+                return ap_get_brigade(f->next, bb, mode, block, readbytes);
+            }
+
+            /* Check whether request body is gzipped.
+             *
+             * If it is, we're transforming the contents, invalidating
+             * some request headers including Content-Encoding.
+             *
+             * If not, we just remove ourself.
+             */
+            if (check_gzip(r, r->headers_in, NULL) == 0) {
+                ap_remove_input_filter(f);
+                return ap_get_brigade(f->next, bb, mode, block, readbytes);
+            }
+
+            f->ctx = ctx = apr_pcalloc(f->r->pool, sizeof(*ctx));
+            ctx->bb = apr_brigade_create(r->pool, f->c->bucket_alloc);
+            ctx->proc_bb = apr_brigade_create(r->pool, f->c->bucket_alloc);
+            ctx->buffer = apr_palloc(r->pool, c->bufferSize);
         }
 
-        /* We can't operate on Content-Ranges */
-        if (apr_table_get(r->headers_in, "Content-Range") != NULL) {
-            ap_remove_input_filter(f);
-            return ap_get_brigade(f->next, bb, mode, block, readbytes);
-        }
+        do {
+            apr_brigade_cleanup(ctx->bb);
 
-        /* Check whether request body is gzipped.
-         *
-         * If it is, we're transforming the contents, invalidating
-         * some request headers including Content-Encoding.
-         *
-         * If not, we just remove ourself.
-         */
-        if (check_gzip(r, r->headers_in, NULL) == 0) {
-            ap_remove_input_filter(f);
-            return ap_get_brigade(f->next, bb, mode, block, readbytes);
-        }
+            len = sizeof(ctx->header) - ctx->header_len;
+            rv = ap_get_brigade(f->next, ctx->bb, AP_MODE_READBYTES, block,
+                                len);
 
-        f->ctx = ctx = apr_pcalloc(f->r->pool, sizeof(*ctx));
-        ctx->bb = apr_brigade_create(r->pool, f->c->bucket_alloc);
-        ctx->proc_bb = apr_brigade_create(r->pool, f->c->bucket_alloc);
-        ctx->buffer = apr_palloc(r->pool, c->bufferSize);
+            /* ap_get_brigade may return success with an empty brigade for
+             * a non-blocking read which would block (an empty brigade for
+             * a blocking read is an issue which is simply forwarded here).
+             */
+            if (rv != APR_SUCCESS || APR_BRIGADE_EMPTY(ctx->bb)) {
+                return rv;
+            }
 
-        rv = ap_get_brigade(f->next, ctx->bb, AP_MODE_READBYTES, block, 10);
-        if (rv != APR_SUCCESS) {
-            return rv;
-        }
+            /* zero length body? step aside */
+            bkt = APR_BRIGADE_FIRST(ctx->bb);
+            if (APR_BUCKET_IS_EOS(bkt)) {
+                if (ctx->header_len) {
+                    /* If the header was (partially) read it's an error, this
+                     * is not a gzip Content-Encoding, as claimed.
+                     */
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(02619)
+                                  "Encountered premature end-of-stream while "
+                                  "reading inflate header");
+                    return APR_EGENERAL;
+                }
+                APR_BUCKET_REMOVE(bkt);
+                APR_BRIGADE_INSERT_TAIL(bb, bkt);
+                ap_remove_input_filter(f);
+                return APR_SUCCESS;
+            }
 
-        apr_table_unset(r->headers_in, "Content-Length");
-        apr_table_unset(r->headers_in, "Content-MD5");
+            rv = apr_brigade_flatten(ctx->bb,
+                                     ctx->header + ctx->header_len, &len);
+            if (rv != APR_SUCCESS) {
+                return rv;
+            }
+            if (len && !ctx->header_len) {
+                apr_table_unset(r->headers_in, "Content-Length");
+                apr_table_unset(r->headers_in, "Content-MD5");
+            }
+            ctx->header_len += len;
 
-        len = 10;
-        rv = apr_brigade_flatten(ctx->bb, deflate_hdr, &len);
-        if (rv != APR_SUCCESS) {
-            return rv;
-        }
+        } while (ctx->header_len < sizeof(ctx->header));
 
         /* We didn't get the magic bytes. */
-        if (len != 10 ||
-            deflate_hdr[0] != deflate_magic[0] ||
-            deflate_hdr[1] != deflate_magic[1]) {
+        if (ctx->header[0] != deflate_magic[0] ||
+            ctx->header[1] != deflate_magic[1]) {
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01387)
+                          "Zlib: Invalid header");
             return APR_EGENERAL;
         }
 
-        /* We can't handle flags for now. */
-        if (deflate_hdr[3] != 0) {
+        ctx->zlib_flags = ctx->header[3];
+        if ((ctx->zlib_flags & RESERVED)) {
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01388)
+                          "Zlib: Invalid flags %02x", ctx->zlib_flags);
             return APR_EGENERAL;
         }
 
@@ -816,7 +1197,7 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
         if (zRC != Z_OK) {
             f->ctx = NULL;
             inflateEnd(&ctx->stream);
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01389)
                           "unable to init Zlib: "
                           "inflateInit2 returned %d: URL %s",
                           zRC, r->uri);
@@ -831,11 +1212,24 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
         apr_brigade_cleanup(ctx->bb);
     }
 
+    inflate_limit = dc->inflate_limit; 
+    if (inflate_limit == 0) { 
+        /* The core is checking the deflated body, we'll check the inflated */
+        inflate_limit = ap_get_limit_req_body(f->r);
+    }
+
     if (APR_BRIGADE_EMPTY(ctx->proc_bb)) {
         rv = ap_get_brigade(f->next, ctx->bb, mode, block, readbytes);
 
+        /* Don't terminate on EAGAIN (or success with an empty brigade in
+         * non-blocking mode), just return focus.
+         */
+        if (block == APR_NONBLOCK_READ
+                && (APR_STATUS_IS_EAGAIN(rv)
+                    || (rv == APR_SUCCESS && APR_BRIGADE_EMPTY(ctx->bb)))) {
+            return rv;
+        }
         if (rv != APR_SUCCESS) {
-            /* What about APR_EAGAIN errors? */
             inflateEnd(&ctx->stream);
             return rv;
         }
@@ -847,72 +1241,173 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
             const char *data;
             apr_size_t len;
 
-            /* If we actually see the EOS, that means we screwed up! */
             if (APR_BUCKET_IS_EOS(bkt)) {
-                inflateEnd(&ctx->stream);
-                return APR_EGENERAL;
+                if (!ctx->done) {
+                    inflateEnd(&ctx->stream);
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(02481)
+                                  "Encountered premature end-of-stream while inflating");
+                    return APR_EGENERAL;
+                }
+
+                /* Move everything to the returning brigade. */
+                APR_BUCKET_REMOVE(bkt);
+                APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, bkt);
+                break;
             }
 
             if (APR_BUCKET_IS_FLUSH(bkt)) {
-                apr_bucket *tmp_heap;
+                apr_bucket *tmp_b;
                 zRC = inflate(&(ctx->stream), Z_SYNC_FLUSH);
                 if (zRC != Z_OK) {
                     inflateEnd(&ctx->stream);
+                    ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01391)
+                                  "Zlib error %d inflating data (%s)", zRC,
+                                  ctx->stream.msg);
                     return APR_EGENERAL;
                 }
 
                 ctx->stream.next_out = ctx->buffer;
                 len = c->bufferSize - ctx->stream.avail_out;
+ 
+                ctx->inflate_total += len;
+                if (inflate_limit && ctx->inflate_total > inflate_limit) { 
+                    inflateEnd(&ctx->stream);
+                    ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(02647)
+                            "Inflated content length of %" APR_OFF_T_FMT
+                            " is larger than the configured limit"
+                            " of %" APR_OFF_T_FMT, 
+                            ctx->inflate_total, inflate_limit);
+                    return APR_ENOSPC;
+                }
 
                 ctx->crc = crc32(ctx->crc, (const Bytef *)ctx->buffer, len);
-                tmp_heap = apr_bucket_heap_create((char *)ctx->buffer, len,
-                                                 NULL, f->c->bucket_alloc);
-                APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, tmp_heap);
+                tmp_b = apr_bucket_heap_create((char *)ctx->buffer, len,
+                                                NULL, f->c->bucket_alloc);
+                APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, tmp_b);
                 ctx->stream.avail_out = c->bufferSize;
 
-                /* Move everything to the returning brigade. */
+                /* Flush everything so far in the returning brigade, but continue
+                 * reading should EOS/more follow (don't lose them).
+                 */
+                tmp_b = APR_BUCKET_PREV(bkt);
                 APR_BUCKET_REMOVE(bkt);
-                APR_BRIGADE_CONCAT(bb, ctx->bb);
-                break;
+                APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, bkt);
+                bkt = tmp_b;
+                continue;
+            }
+
+            /* sanity check - data after completed compressed body and before eos? */
+            if (ctx->done) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(02482)
+                              "Encountered extra data after compressed data");
+                return APR_EGENERAL;
             }
 
             /* read */
             apr_bucket_read(bkt, &data, &len, APR_BLOCK_READ);
+            if (!len) {
+                continue;
+            }
+            if (len > INT_MAX) {
+                apr_bucket_split(bkt, INT_MAX);
+                apr_bucket_read(bkt, &data, &len, APR_BLOCK_READ);
+            }
+
+            if (ctx->zlib_flags) {
+                rv = consume_zlib_flags(ctx, &data, &len);
+                if (rv == APR_SUCCESS) {
+                    ctx->zlib_flags = 0;
+                }
+                if (!len) {
+                    continue;
+                }
+            }
 
             /* pass through zlib inflate. */
             ctx->stream.next_in = (unsigned char *)data;
-            ctx->stream.avail_in = len;
+            ctx->stream.avail_in = (int)len;
 
             zRC = Z_OK;
 
-            while (ctx->stream.avail_in != 0) {
-                if (ctx->stream.avail_out == 0) {
-                    apr_bucket *tmp_heap;
-                    ctx->stream.next_out = ctx->buffer;
-                    len = c->bufferSize - ctx->stream.avail_out;
+            if (!ctx->validation_buffer) {
+                while (ctx->stream.avail_in != 0) {
+                    if (ctx->stream.avail_out == 0) {
+                        apr_bucket *tmp_heap;
 
-                    ctx->crc = crc32(ctx->crc, (const Bytef *)ctx->buffer, len);
-                    tmp_heap = apr_bucket_heap_create((char *)ctx->buffer, len,
-                                                      NULL, f->c->bucket_alloc);
-                    APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, tmp_heap);
-                    ctx->stream.avail_out = c->bufferSize;
-                }
+                        ctx->stream.next_out = ctx->buffer;
+                        len = c->bufferSize - ctx->stream.avail_out;
 
-                zRC = inflate(&ctx->stream, Z_NO_FLUSH);
+                        ctx->inflate_total += len;
+                        if (inflate_limit && ctx->inflate_total > inflate_limit) { 
+                            inflateEnd(&ctx->stream);
+                            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(02648)
+                                    "Inflated content length of %" APR_OFF_T_FMT
+                                    " is larger than the configured limit"
+                                    " of %" APR_OFF_T_FMT, 
+                                    ctx->inflate_total, inflate_limit);
+                            return APR_ENOSPC;
+                        }
 
-                if (zRC == Z_STREAM_END) {
-                    break;
-                }
+                        if (!check_ratio(r, ctx, dc)) {
+                            inflateEnd(&ctx->stream);
+                            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(02649)
+                                    "Inflated content ratio is larger than the "
+                                    "configured limit %i by %i time(s)",
+                                    dc->ratio_limit, dc->ratio_burst);
+                            return APR_EINVAL;
+                        }
 
-                if (zRC != Z_OK) {
-                    inflateEnd(&ctx->stream);
-                    return APR_EGENERAL;
+                        ctx->crc = crc32(ctx->crc, (const Bytef *)ctx->buffer, len);
+                        tmp_heap = apr_bucket_heap_create((char *)ctx->buffer, len,
+                                                          NULL, f->c->bucket_alloc);
+                        APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, tmp_heap);
+                        ctx->stream.avail_out = c->bufferSize;
+                    }
+
+                    zRC = inflate(&ctx->stream, Z_NO_FLUSH);
+
+                    if (zRC == Z_STREAM_END) {
+                        ctx->validation_buffer = apr_pcalloc(r->pool,
+                                                             VALIDATION_SIZE);
+                        ctx->validation_buffer_length = 0;
+                        break;
+                    }
+
+                    if (zRC != Z_OK) {
+                        inflateEnd(&ctx->stream);
+                        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01392)
+                                      "Zlib error %d inflating data (%s)", zRC,
+                                      ctx->stream.msg);
+                        return APR_EGENERAL;
+                    }
                 }
             }
-            if (zRC == Z_STREAM_END) {
-                apr_bucket *tmp_heap, *eos;
 
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+            if (ctx->validation_buffer) {
+                apr_bucket *tmp_heap;
+                apr_size_t avail, valid;
+                unsigned char *buf = ctx->validation_buffer;
+
+                avail = ctx->stream.avail_in;
+                valid = (apr_size_t)VALIDATION_SIZE -
+                         ctx->validation_buffer_length;
+
+                /*
+                 * We have inflated all data. Now try to capture the
+                 * validation bytes. We may not have them all available
+                 * right now, but capture what is there.
+                 */
+                if (avail < valid) {
+                    memcpy(buf + ctx->validation_buffer_length,
+                           ctx->stream.next_in, avail);
+                    ctx->validation_buffer_length += avail;
+                    continue;
+                }
+                memcpy(buf + ctx->validation_buffer_length,
+                       ctx->stream.next_in, valid);
+                ctx->validation_buffer_length += valid;
+
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01393)
                               "Zlib: Inflated %ld to %ld : URL %s",
                               ctx->stream.total_in, ctx->stream.total_out,
                               r->uri);
@@ -925,33 +1420,37 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
                 APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, tmp_heap);
                 ctx->stream.avail_out = c->bufferSize;
 
-                /* Is the remaining 8 bytes already in the avail stream? */
-                if (ctx->stream.avail_in >= 8) {
+                {
                     unsigned long compCRC, compLen;
-                    compCRC = getLong(ctx->stream.next_in);
+                    compCRC = getLong(buf);
                     if (ctx->crc != compCRC) {
                         inflateEnd(&ctx->stream);
+                        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01394)
+                                      "Zlib: CRC error inflating data");
                         return APR_EGENERAL;
                     }
-                    ctx->stream.next_in += 4;
-                    compLen = getLong(ctx->stream.next_in);
-                    if (ctx->stream.total_out != compLen) {
+                    compLen = getLong(buf + VALIDATION_SIZE / 2);
+                    /* gzip stores original size only as 4 byte value */
+                    if ((ctx->stream.total_out & 0xFFFFFFFF) != compLen) {
                         inflateEnd(&ctx->stream);
+                        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01395)
+                                      "Zlib: Length %ld of inflated data does "
+                                      "not match expected value %ld",
+                                      ctx->stream.total_out, compLen);
                         return APR_EGENERAL;
                     }
-                }
-                else {
-                    /* FIXME: We need to grab the 8 verification bytes
-                     * from the wire! */
-                    inflateEnd(&ctx->stream);
-                    return APR_EGENERAL;
                 }
 
                 inflateEnd(&ctx->stream);
 
-                eos = apr_bucket_eos_create(f->c->bucket_alloc);
-                APR_BRIGADE_INSERT_TAIL(ctx->proc_bb, eos);
-                break;
+                ctx->done = 1;
+
+                /* Did we have trailing data behind the closing 8 bytes? */
+                if (avail > valid) {
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(02485)
+                                  "Encountered extra data after compressed data");
+                    return APR_EGENERAL;
+                }
             }
 
         }
@@ -962,8 +1461,8 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
      * some data in our zlib buffer, flush it out so we can return something.
      */
     if (block == APR_BLOCK_READ &&
-        APR_BRIGADE_EMPTY(ctx->proc_bb) &&
-        ctx->stream.avail_out < c->bufferSize) {
+            APR_BRIGADE_EMPTY(ctx->proc_bb) &&
+            ctx->stream.avail_out < c->bufferSize) {
         apr_bucket *tmp_heap;
         apr_size_t len;
         ctx->stream.next_out = ctx->buffer;
@@ -977,14 +1476,16 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
     }
 
     if (!APR_BRIGADE_EMPTY(ctx->proc_bb)) {
-        apr_bucket_brigade *newbb;
-
-        /* May return APR_INCOMPLETE which is fine by us. */
-        apr_brigade_partition(ctx->proc_bb, readbytes, &bkt);
-
-        newbb = apr_brigade_split(ctx->proc_bb, bkt);
-        APR_BRIGADE_CONCAT(bb, ctx->proc_bb);
-        APR_BRIGADE_CONCAT(ctx->proc_bb, newbb);
+        if (apr_brigade_partition(ctx->proc_bb, readbytes, &bkt) == APR_INCOMPLETE) {
+            APR_BRIGADE_CONCAT(bb, ctx->proc_bb);
+        }
+        else {
+            APR_BRIGADE_CONCAT(bb, ctx->proc_bb);
+            apr_brigade_split_ex(bb, bkt, ctx->proc_bb);
+        }
+        if (APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(bb))) {
+            ap_remove_input_filter(f);
+        }
     }
 
     return APR_SUCCESS;
@@ -995,47 +1496,49 @@ static apr_status_t deflate_in_filter(ap_filter_t *f,
 static apr_status_t inflate_out_filter(ap_filter_t *f,
                                       apr_bucket_brigade *bb)
 {
-    int zlib_method;
-    int zlib_flags;
     apr_bucket *e;
     request_rec *r = f->r;
     deflate_ctx *ctx = f->ctx;
     int zRC;
     apr_status_t rv;
     deflate_filter_config *c;
+    deflate_dirconf_t *dc;
 
     /* Do nothing if asked to filter nothing. */
     if (APR_BRIGADE_EMPTY(bb)) {
-        return ap_pass_brigade(f->next, bb);
+        return APR_SUCCESS;
     }
 
     c = ap_get_module_config(r->server->module_config, &deflate_module);
+    dc = ap_get_module_config(r->per_dir_config, &deflate_module);
 
     if (!ctx) {
 
-        /* only work on main request/no subrequests */
-        if (!ap_is_initial_req(r)) {
-            ap_remove_output_filter(f);
-            return ap_pass_brigade(f->next, bb);
-        }
-
-        /* We can't operate on Content-Ranges */
-        if (apr_table_get(r->headers_out, "Content-Range") != NULL) {
+        /*
+         * Only work on main request, not subrequests,
+         * that are not a 204 response with no content
+         * and not a partial response to a Range request,
+         * and only when Content-Encoding ends in gzip.
+         */
+        if (!ap_is_initial_req(r) || (r->status == HTTP_NO_CONTENT) ||
+            (apr_table_get(r->headers_out, "Content-Range") != NULL) ||
+            (check_gzip(r, r->headers_out, r->err_headers_out) == 0)
+           ) {
             ap_remove_output_filter(f);
             return ap_pass_brigade(f->next, bb);
         }
 
         /*
-         * Let's see what our current Content-Encoding is.
-         * Only inflate if gzipped.
+         * At this point we have decided to filter the content, so change
+         * important content metadata before sending any response out.
+         * Content-Encoding was already reset by the check_gzip() call.
          */
-        if (check_gzip(r, r->headers_out, r->err_headers_out) == 0) {
-            ap_remove_output_filter(f);
-            return ap_pass_brigade(f->next, bb);
-        }
+        apr_table_unset(r->headers_out, "Content-Length");
+        apr_table_unset(r->headers_out, "Content-MD5");
+        deflate_check_etag(r, "gunzip");
 
-        /* No need to inflate HEAD or 204/304 */
-        if (APR_BUCKET_IS_EOS(APR_BRIGADE_FIRST(bb))) {
+        /* For a 304 response, only change the headers */
+        if (r->status == HTTP_NOT_MODIFIED) {
             ap_remove_output_filter(f);
             return ap_pass_brigade(f->next, bb);
         }
@@ -1052,7 +1555,7 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
         if (zRC != Z_OK) {
             f->ctx = NULL;
             inflateEnd(&ctx->stream);
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01397)
                           "unable to init Zlib: "
                           "inflateInit2 returned %d: URL %s",
                           zRC, r->uri);
@@ -1072,15 +1575,9 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
         apr_pool_cleanup_register(r->pool, ctx, deflate_ctx_cleanup,
                                   apr_pool_cleanup_null);
 
-        /* these are unlikely to be set anyway, but ... */
-        apr_table_unset(r->headers_out, "Content-Length");
-        apr_table_unset(r->headers_out, "Content-MD5");
-
         /* initialize inflate output buffer */
         ctx->stream.next_out = ctx->buffer;
         ctx->stream.avail_out = c->bufferSize;
-
-        ctx->inflate_init = 0;
     }
 
     while (!APR_BRIGADE_EMPTY(bb))
@@ -1110,7 +1607,7 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
              */
             flush_libz_buffer(ctx, c, f->c->bucket_alloc, inflate, Z_SYNC_FLUSH,
                               UPDATE_CRC);
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01398)
                           "Zlib: Inflated %ld to %ld : URL %s",
                           ctx->stream.total_in, ctx->stream.total_out, r->uri);
 
@@ -1118,20 +1615,21 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
                 unsigned long compCRC, compLen;
                 compCRC = getLong(ctx->validation_buffer);
                 if (ctx->crc != compCRC) {
-                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01399)
                                   "Zlib: Checksum of inflated stream invalid");
                     return APR_EGENERAL;
                 }
                 ctx->validation_buffer += VALIDATION_SIZE / 2;
                 compLen = getLong(ctx->validation_buffer);
-                if (ctx->stream.total_out != compLen) {
-                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                /* gzip stores original size only as 4 byte value */
+                if ((ctx->stream.total_out & 0xFFFFFFFF) != compLen) {
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01400)
                                   "Zlib: Length of inflated stream invalid");
                     return APR_EGENERAL;
                 }
             }
             else {
-                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01401)
                               "Zlib: Validation bytes not present");
                 return APR_EGENERAL;
             }
@@ -1157,7 +1655,16 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
             /* flush the remaining data from the zlib buffers */
             zRC = flush_libz_buffer(ctx, c, f->c->bucket_alloc, inflate,
                                     Z_SYNC_FLUSH, UPDATE_CRC);
-            if (zRC != Z_OK) {
+            if (zRC == Z_STREAM_END) {
+                if (ctx->validation_buffer == NULL) {
+                    ctx->validation_buffer = apr_pcalloc(f->r->pool,
+                                                         VALIDATION_SIZE);
+                }
+            }
+            else if (zRC != Z_OK) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01402)
+                              "Zlib error %d flushing inflate buffer (%s)",
+                              zRC, ctx->stream.msg);
                 return APR_EGENERAL;
             }
 
@@ -1183,56 +1690,68 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
 
         /* read */
         apr_bucket_read(e, &data, &len, APR_BLOCK_READ);
+        if (!len) {
+            apr_bucket_delete(e);
+            continue;
+        }
+        if (len > INT_MAX) {
+            apr_bucket_split(e, INT_MAX);
+            apr_bucket_read(e, &data, &len, APR_BLOCK_READ);
+        }
 
         /* first bucket contains zlib header */
-        if (!ctx->inflate_init++) {
-            if (len < 10) {
-                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                              "Insufficient data for inflate");
-                return APR_EGENERAL;
+        if (ctx->header_len < sizeof(ctx->header)) {
+            apr_size_t rem;
+
+            rem = sizeof(ctx->header) - ctx->header_len;
+            if (len < rem) {
+                memcpy(ctx->header + ctx->header_len, data, len);
+                ctx->header_len += len;
+                apr_bucket_delete(e);
+                continue;
             }
-            else  {
-                zlib_method = data[2];
-                zlib_flags = data[3];
+            memcpy(ctx->header + ctx->header_len, data, rem);
+            ctx->header_len += rem;
+            {
+                int zlib_method;
+                zlib_method = ctx->header[2];
                 if (zlib_method != Z_DEFLATED) {
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01404)
                                   "inflate: data not deflated!");
                     ap_remove_output_filter(f);
                     return ap_pass_brigade(f->next, bb);
                 }
-                if (data[0] != deflate_magic[0] ||
-                    data[1] != deflate_magic[1] ||
-                    (zlib_flags & RESERVED) != 0) {
-                        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                if (ctx->header[0] != deflate_magic[0] ||
+                    ctx->header[1] != deflate_magic[1]) {
+                        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(01405)
                                       "inflate: bad header");
                     return APR_EGENERAL ;
                 }
-                data += 10 ;
-                len -= 10 ;
-           }
-           if (zlib_flags & EXTRA_FIELD) {
-               unsigned int bytes = (unsigned int)(data[0]);
-               bytes += ((unsigned int)(data[1])) << 8;
-               bytes += 2;
-               if (len < bytes) {
-                   ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                                 "inflate: extra field too big (not "
-                                 "supported)");
-                   return APR_EGENERAL;
-               }
-               data += bytes;
-               len -= bytes;
-           }
-           if (zlib_flags & ORIG_NAME) {
-               while (len-- && *data++);
-           }
-           if (zlib_flags & COMMENT) {
-               while (len-- && *data++);
-           }
-           if (zlib_flags & HEAD_CRC) {
-                len -= 2;
-                data += 2;
-           }
+                ctx->zlib_flags = ctx->header[3];
+                if ((ctx->zlib_flags & RESERVED)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, APLOGNO(02620)
+                                  "inflate: bad flags %02x",
+                                  ctx->zlib_flags);
+                    return APR_EGENERAL;
+                }
+            }
+            if (len == rem) {
+                apr_bucket_delete(e);
+                continue;
+            }
+            data += rem;
+            len -= rem;
+        }
+
+        if (ctx->zlib_flags) {
+            rv = consume_zlib_flags(ctx, &data, &len);
+            if (rv == APR_SUCCESS) {
+                ctx->zlib_flags = 0;
+            }
+            if (!len) {
+                apr_bucket_delete(e);
+                continue;
+            }
         }
 
         /* pass through zlib inflate. */
@@ -1253,7 +1772,7 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
                 ctx->validation_buffer_length += copy_size;
             }
             if (ctx->stream.avail_in) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01407)
                               "Zlib: %d bytes of garbage at the end of "
                               "compressed stream.", ctx->stream.avail_in);
                 /*
@@ -1267,10 +1786,16 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
             }
         }
 
-        zRC = Z_OK;
-
         while (ctx->stream.avail_in != 0) {
             if (ctx->stream.avail_out == 0) {
+
+                if (!check_ratio(r, ctx, dc)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(02650)
+                            "Inflated content ratio is larger than the "
+                            "configured limit %i by %i time(s)",
+                            dc->ratio_limit, dc->ratio_burst);
+                    return APR_EINVAL;
+                }
 
                 ctx->stream.next_out = ctx->buffer;
                 len = c->bufferSize - ctx->stream.avail_out;
@@ -1299,7 +1824,7 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
                                                      VALIDATION_SIZE);
                 if (ctx->stream.avail_in > VALIDATION_SIZE) {
                     ctx->validation_buffer_length = VALIDATION_SIZE;
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01408)
                                   "Zlib: %d bytes of garbage at the end of "
                                   "compressed stream.",
                                   ctx->stream.avail_in - VALIDATION_SIZE);
@@ -1313,6 +1838,9 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
             }
 
             if (zRC != Z_OK) {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(01409)
+                              "Zlib error %d inflating data (%s)", zRC,
+                              ctx->stream.msg);
                 return APR_EGENERAL;
             }
         }
@@ -1324,6 +1852,14 @@ static apr_status_t inflate_out_filter(ap_filter_t *f,
     return APR_SUCCESS;
 }
 
+static int mod_deflate_post_config(apr_pool_t *pconf, apr_pool_t *plog,
+                                   apr_pool_t *ptemp, server_rec *s)
+{
+    mod_deflate_ssl_var = APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup);
+    return OK;
+}
+
+
 #define PROTO_FLAGS AP_FILTER_PROTO_CHANGE|AP_FILTER_PROTO_CHANGE_LENGTH
 static void register_hooks(apr_pool_t *p)
 {
@@ -1333,6 +1869,7 @@ static void register_hooks(apr_pool_t *p)
                               AP_FTYPE_RESOURCE-1);
     ap_register_input_filter(deflateFilterName, deflate_in_filter, NULL,
                               AP_FTYPE_CONTENT_SET);
+    ap_hook_post_config(mod_deflate_post_config, NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 static const command_rec deflate_filter_cmds[] = {
@@ -1346,12 +1883,20 @@ static const command_rec deflate_filter_cmds[] = {
                   "Set the Deflate Memory Level (1-9)"),
     AP_INIT_TAKE1("DeflateCompressionLevel", deflate_set_compressionlevel, NULL, RSRC_CONF,
                   "Set the Deflate Compression Level (1-9)"),
+    AP_INIT_TAKE1("DeflateInflateLimitRequestBody", deflate_set_inflate_limit, NULL, OR_ALL,
+                  "Set a limit on size of inflated input"),
+    AP_INIT_TAKE1("DeflateInflateRatioLimit", deflate_set_inflate_ratio_limit, NULL, OR_ALL,
+                  "Set the inflate ratio limit above which inflation is "
+                  "aborted (default: " APR_STRINGIFY(AP_INFLATE_RATIO_LIMIT) ")"),
+    AP_INIT_TAKE1("DeflateInflateRatioBurst", deflate_set_inflate_ratio_burst, NULL, OR_ALL,
+                  "Set the maximum number of following inflate ratios above limit "
+                  "(default: " APR_STRINGIFY(AP_INFLATE_RATIO_BURST) ")"),
     {NULL}
 };
 
-module AP_MODULE_DECLARE_DATA deflate_module = {
+AP_DECLARE_MODULE(deflate) = {
     STANDARD20_MODULE_STUFF,
-    NULL,                         /* dir config creater */
+    create_deflate_dirconf,       /* dir config creater */
     NULL,                         /* dir merger --- default is to override */
     create_deflate_server_config, /* server config */
     NULL,                         /* merge server config */
