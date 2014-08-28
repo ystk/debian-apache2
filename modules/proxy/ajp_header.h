@@ -27,7 +27,7 @@
 
 /*
  * Conditional request attributes
- * 
+ *
  */
 #define SC_A_CONTEXT            (unsigned char)1
 #define SC_A_SERVLET_PATH       (unsigned char)2
@@ -41,6 +41,7 @@
 #define SC_A_REQ_ATTRIBUTE      (unsigned char)10
 #define SC_A_SSL_KEY_SIZE       (unsigned char)11       /* only in if JkOptions +ForwardKeySize */
 #define SC_A_SECRET             (unsigned char)12
+#define SC_A_STORED_METHOD      (unsigned char)13
 #define SC_A_ARE_DONE           (unsigned char)0xFF
 
 /*
@@ -50,18 +51,23 @@
  * to contain the forwarded remote port.
  */
 #define SC_A_REQ_REMOTE_PORT    ("AJP_REMOTE_PORT")
+/*
+ * The following request attribute is recognized by Tomcat
+ * to contain the forwarded local ip address.
+ */
+#define SC_A_REQ_LOCAL_ADDR     ("AJP_LOCAL_ADDR")
 
 /*
  * Request methods, coded as numbers instead of strings.
  * The list of methods was taken from Section 5.1.1 of RFC 2616,
  * RFC 2518, the ACL IETF draft, and the DeltaV IESG Proposed Standard.
  *          Method        = "OPTIONS"
- *                        | "GET"    
- *                        | "HEAD"   
- *                        | "POST"   
- *                        | "PUT"    
- *                        | "DELETE" 
- *                        | "TRACE"  
+ *                        | "GET"
+ *                        | "HEAD"
+ *                        | "POST"
+ *                        | "PUT"
+ *                        | "DELETE"
+ *                        | "TRACE"
  *                        | "PROPFIND"
  *                        | "PROPPATCH"
  *                        | "MKCOL"
@@ -82,7 +88,7 @@
  *                        | "MERGE"
  *                        | "BASELINE-CONTROL"
  *                        | "MKACTIVITY"
- * 
+ *
  */
 #define SC_M_OPTIONS            (unsigned char)1
 #define SC_M_GET                (unsigned char)2
@@ -111,12 +117,13 @@
 #define SC_M_MERGE              (unsigned char)25
 #define SC_M_BASELINE_CONTROL   (unsigned char)26
 #define SC_M_MKACTIVITY         (unsigned char)27
+#define SC_M_JK_STORED          (unsigned char)0xFF
 
 
 /*
  * Frequent request headers, these headers are coded as numbers
  * instead of strings.
- * 
+ *
  * Accept
  * Accept-Charset
  * Accept-Encoding
@@ -131,7 +138,7 @@
  * Pragma
  * Referer
  * User-Agent
- * 
+ *
  */
 
 #define SC_ACCEPT               (unsigned short)0xA001
@@ -142,7 +149,7 @@
 #define SC_CONNECTION           (unsigned short)0xA006
 #define SC_CONTENT_TYPE         (unsigned short)0xA007
 #define SC_CONTENT_LENGTH       (unsigned short)0xA008
-#define SC_COOKIE               (unsigned short)0xA009    
+#define SC_COOKIE               (unsigned short)0xA009
 #define SC_COOKIE2              (unsigned short)0xA00A
 #define SC_HOST                 (unsigned short)0xA00B
 #define SC_PRAGMA               (unsigned short)0xA00C
@@ -152,7 +159,7 @@
 /*
  * Frequent response headers, these headers are coded as numbers
  * instead of strings.
- * 
+ *
  * Content-Type
  * Content-Language
  * Content-Length
@@ -163,7 +170,7 @@
  * Servlet-Engine
  * Status
  * WWW-Authenticate
- * 
+ *
  */
 
 #define SC_RESP_CONTENT_TYPE        (unsigned short)0xA001
