@@ -1,8 +1,48 @@
-apache2 (2.2.16-6+squeeze11skerlet1) squeeze-security; urgency=high
+apache2 (2.2.16-6+squeeze14) squeeze-lts; urgency=high
 
-  * fix for build
+  * Non-maintainer upload by the LTS Team.
+  * CVE-2014-3581: Fix DoS with empty Content-Type and mod_cache.
+  * CVE-2013-5704: HTTP trailers could be used to replace HTTP headers
+    late during request processing, potentially undoing or otherwise confusing
+    modules that examined or modified request headers earlier.  Adds
+    "MergeTrailers" directive to restore legacy behavior
 
- -- Skerlet Project Team <skerlet@swc.toshiba.co.jp>  Wed, 31 Jul 2013 12:49:23 +0900
+ -- Raphaël Hertzog <hertzog@debian.org>  Wed, 15 Oct 2014 11:21:37 +0200
+
+apache2 (2.2.16-6+squeeze13) squeeze-lts; urgency=medium
+
+  * Non-maintainer upload by the Squeeze LTS Team.
+  * SECURITY UPDATE: resource consumption via mod_deflate body
+    decompression
+    - debian/patches/CVE-2014-0118.dpatch: added new configuration options
+      DeflateInflateLimitRequestBody, DeflateInflateRatioLimit, and
+      DeflateInflateRatioBurst in modules/filters/mod_deflate.c.
+  * SECURITY UPDATE: denial of service via race in mod_status
+    - debian/patches/CVE-2014-0226.dpatch: fix race by adding
+      ap_copy_scoreboard_worker() to include/scoreboard.h,
+      modules/generators/mod_status.c, server/scoreboard.c.
+  * SECURITY UPDATE: denial of service in mod_cgid
+    - debian/patches/CVE-2014-0231.dpatch: added new configuration option
+      CGIDScriptTimeout in modules/generators/mod_cgid.c.
+  * SECURITY UPDATE: denial of service via mod_dav incorrect end of string
+    calculation
+    - debian/patches/CVE-2013-6438.dpatch: properly calculate correct length
+      in modules/dav/main/util.c.
+  * Thanks to Marc Deslauriers from the Ubuntu Security team for the patches!
+
+ -- Holger Levsen <holger@debian.org>  Sun, 28 Sep 2014 18:50:54 +0200
+
+apache2 (2.2.16-6+squeeze12) squeeze; urgency=medium
+
+  * Security: CVE-2013-1862: mod_rewrite: Ensure that client data written to
+    the RewriteLog is escaped to prevent terminal escape sequences from
+    entering the log file. Closes: #722333
+  * Security: CVE-2013-1896: mod_dav: denial of service via MERGE request.
+    Closes: #717272
+  * mod_dav: Fix segfaults in certain error conditions.
+    https://issues.apache.org/bugzilla/show_bug.cgi?id=52559
+
+ -- Stefan Fritsch <sf@debian.org>  Tue, 28 Jan 2014 22:48:05 +0100
 
 apache2 (2.2.16-6+squeeze11) squeeze-security; urgency=high
 
