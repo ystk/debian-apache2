@@ -27,7 +27,6 @@ OBSOLETE_CONFFILES="/etc/apache2/mods-available/authz_default.load
 /etc/apache2/mods-available/cern_meta.load
 /etc/apache2/mods-available/disk_cache.load
 /etc/apache2/mods-available/disk_cache.conf
-/etc/apache2/mods-available/ident.load
 /etc/apache2/mods-available/imagemap.load
 /etc/apache2/mods-available/version.load"
 
@@ -115,7 +114,9 @@ case "$1" in
 		fi
 
 		if [ -n "$2" ] && dpkg --compare-versions "$2" 'lt' '2.4.7-1~' && dpkg --compare-versions "$2" 'ge' '2.4.1-1' ; then
-			CUR_MPM=$(a2query -M) || exit 1
+			CUR_MPM="$(ls /etc/apache2/mods-enabled/mpm_*.load)"
+			CUR_MPM="${CUR_MPM##*/mpm_}"
+			CUR_MPM="${CUR_MPM%.load}"
 			if [ "$CUR_MPM" == "itk" ] ; then
 				echo "apache2-mpm-itk" >> /etc/apache2/.apache2_mpm_selected
 			fi

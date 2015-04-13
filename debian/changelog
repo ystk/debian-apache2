@@ -1,3 +1,125 @@
+apache2 (2.4.10-10) unstable; urgency=medium
+
+  * CVE-2015-0228: mod_lua: Fix denial of service vulnerability in
+    wsupgrade().
+  * Fix setup-instance example script to handle a2enconf/a2disconf.
+    LP: #1430936
+  * Tweak mention of mod_access_compat in NEWS.Debian. The module does
+    not really work in practice.
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 15 Mar 2015 10:47:36 +0100
+
+apache2 (2.4.10-9) unstable; urgency=medium
+
+  * CVE-2014-8109: mod_lua: Fix handling of the Require line when a
+    LuaAuthzProvider is used in multiple Require directives with different
+    arguments.
+  * Include ask-for-passphrase script from Ubuntu with some tweaks. This
+    fixes asking for certificate passphrases if started via systemd.
+    Closes: #773405
+  * Fix init script to not wait 20s if passphrase was wrong.
+  * Also bump debhelper build-depends to get dh_installdeb with support for
+    symlink_to_dir. Closes: #770421
+
+ -- Stefan Fritsch <sf@debian.org>  Mon, 22 Dec 2014 20:24:36 +0100
+
+apache2 (2.4.10-8) unstable; urgency=medium
+
+  * Bump dpkg Pre-Depends to version that supports relative symlinks in
+    dpkg-maintscript-helper's symlink_to_dir. Closes: #769821
+  * mod_proxy_fcgi: Fix potential denial of service by malicious fcgi
+    script. (CVE-2014-3583). Fix similar bug in mod_authnz_fcgi even
+    though it does not seem to be exploitable.
+  * mpm_event: Fix use-after-free that may lead to a server crash.
+  * mod_ssl: Fix memory leak on graceful restart. Closes: #754492
+  * mod_ssl: Avoid crashes during startup or graceful restart due to
+    openssl using a callback to invalid memory. LP: #1366174
+
+ -- Stefan Fritsch <sf@debian.org>  Tue, 18 Nov 2014 15:18:18 +0100
+
+apache2 (2.4.10-7) unstable; urgency=medium
+
+  * Handle transitions of doc dirs and symlinks correctly during upgrade.
+    Use dpkg-maintscript-helper for this and remove existing explicit logic.
+    Closes: #767850
+  * Remove obsolete conffiles in apache2.2-common, instead doing this only in
+    apache2. This partially fixes #768815
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 09 Nov 2014 19:03:30 +0100
+
+apache2 (2.4.10-6) unstable; urgency=medium
+
+  * Disable SSLv3 in default config. Closes: #765347
+  * Pull changes from upstream 2.4.x branch up to r1632831
+    - Fixes an LDAP regression in 2.4.10
+    - mod_cache: Avoid sending 304 responses during failed revalidations.
+      PR 56881
+    - mod_status: Honor client IP address using mod_remoteip. PR 55886
+  * Fix typo in package description. Closes: #765500
+
+ -- Stefan Fritsch <sf@debian.org>  Tue, 21 Oct 2014 22:42:06 +0200
+
+apache2 (2.4.10-5) unstable; urgency=medium
+
+  * Remove one forgotten instance of ident.load in the preinst.
+
+ -- Stefan Fritsch <sf@debian.org>  Fri, 10 Oct 2014 00:20:09 +0200
+
+apache2 (2.4.10-4) unstable; urgency=medium
+
+  [ Stefan Fritsch ]
+  * Make apache2 depend on apache2-utils. This got lost somewhere in the
+    2.4 update.
+  * Fix possible installation failure because of broken preinst script.
+    Closes: #764498
+  * Improve package descriptions. Closes: #763676
+
+  [ Arno Töll ]
+  * Add proper return codes to fail() conditions in a2query. Thanks to Ondřej
+    Surý for providing a patch.
+
+ -- Stefan Fritsch <sf@debian.org>  Thu, 09 Oct 2014 22:19:12 +0200
+
+apache2 (2.4.10-3) unstable; urgency=medium
+
+  * CVE-2014-3581: Fix a DoS in mod_cache.
+  * If apache2 is not configured yet, defer actions executed via
+    apache2-maintscript-helper. This fixes installation failures if a
+    module package is configured first. Closes: #745834
+  * Don't use a2query in preinst, as it may not be available yet.
+    Closes: #745812
+  * Include mod_authnz_fcgi. Closes: #762908
+  * Add some comments about SSLHonorCipherOrder in ssl.conf. Closes: #746359
+  * Remove misleading sentence in apache2-bin's description. Closes: #762645
+  * Remove trailing space in apache2/suexec/www-data. Closes: #719930
+  * Add NEWS entry for the logrotate change in 2.4.10-2.
+  * Bump Standards-version (no changes).
+  * Fix lintian warning: Tweak licence short names in copyright file.
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 28 Sep 2014 22:37:02 +0200
+
+apache2 (2.4.10-2) unstable; urgency=medium
+
+  * Pull changes from upstream 2.4.x branch up to r1626207
+    + Security Fix for CVE-2013-5704: HTTP trailers could be used to
+      replace HTTP headers late during request processing, potentially
+      undoing or otherwise confusing modules that examined or modified
+      request headers earlier.
+      Adds "MergeTrailers" directive to restore legacy behavior.
+
+  * Switch to apache2 providing the httpd and httpd-cgi virtual packages.
+    The previously providing apache2-bin package lacks the configuration
+    files. Closes: #756361
+  * Keep fewer logs by default. Instead of 52 weekly logs, keep 14 daily
+    logs. The daily graceful restart also has the advantage of regenerating
+    things like TLS session ticket keys more often. Closes: #759382
+  * Clarify description of apache2 package. Closes: #755976
+  * In the maintainer script helper, print out Apache's error message if
+    the config check fails.
+  * Re-add mod_ident. It has still at least one user. LP: #1333388
+
+ -- Stefan Fritsch <sf@debian.org>  Sun, 21 Sep 2014 22:58:33 +0200
+
 apache2 (2.4.10-1) unstable; urgency=medium
 
   [ Arno Töll ]
