@@ -1,3 +1,9 @@
+apache2 (2.2.16-6+squeeze15skerlet1) squeeze-lts; urgency=high
+
+ * fix for build
+
+-- Skerlet Team <skerlet@swc.toshiba.co.jp>  Thu, 25 Feb 2016 09:29:10 +0000
+
 apache2 (2.2.16-6+squeeze15) squeeze-lts; urgency=high
 
   * Non-maintainer upload by the Squeeze LTS Team.
