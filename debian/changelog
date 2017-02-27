@@ -1,3 +1,29 @@
+apache2 (2.4.10-10+deb8u8) jessie-security; urgency=medium
+
+  * CVE-2016-8743: Enforce more HTTP conformance for request lines and
+    request headers, to prevent response splitting and cache pollution
+    by malicious clients or downstream proxies.
+    If this causes problems with non-conforming clients, some checks can
+    be relaxed by adding the new directive 'HttpProtocolOptions unsafe'
+    to the configuration.
+    Differently than the upstream 2.4.25 release which will also be in the
+    Debian 9 (stretch) release, this update for Debian 8 (jessie) accepts
+    underscores in host and domain names even while 'HttpProtocolOptions
+    strict' is in effect.
+    More information is available at
+    http://httpd.apache.org/docs/2.4/mod/core.html#httpprotocoloptions
+  * CVE-2016-0736: mod_session_crypto: Prevent padding oracle attack.
+  * CVE-2016-2161: mod_auth_digest: Prevent segfaults when the shared memory
+    space is exhausted.
+  * Activate mod_reqtimeout in new installs and during updates from
+    before 2.4.10-10+deb8u8. It was wrongly not activated in new installs
+    since jessie. This made the default installation vulnerable to some
+    DoS attacks.
+  * Don't run 2.2 to 2.4 upgrade logic again when upgrading from
+    2.4.10-10+deb8u*. Closes: #836818
+
+ -- Stefan Fritsch <sf@debian.org>  Fri, 24 Feb 2017 19:36:41 +0100
+
 apache2 (2.4.10-10+deb8u7) jessie; urgency=medium
 
   * Fix installation of /lib/systemd/system/apache2.service.d/forking.conf.
