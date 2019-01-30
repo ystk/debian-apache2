@@ -1,3 +1,12 @@
+apache2 (2.4.10-10+deb8u13) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the LTS Team. 
+  * CVE-2018-17199
+    In order to not ignore expire time of cookies, always decode session
+    attributes early.
+ 
+ -- Thorsten Alteholz <debian@alteholz.de>  Tue, 29 Jan 2019 19:03:02 +0100
+
 apache2 (2.4.10-10+deb8u12) jessie-security; urgency=medium
 
   * CVE-2017-15710: mod_authnz_ldap: Out of bound write in mod_authnz_ldap
