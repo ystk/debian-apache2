@@ -42,3 +42,5 @@ CVE-2018-1312-mod_auth_digest-nonce.diff
 CVE-2018-17199.patch
 CVE-2019-0217-digest-collusion-in-mod_auth_digest.diff
 CVE-2019-0220-merge-slashes.diff
+CVE-2019-10098.patch
+CVE-2019-10092.patch

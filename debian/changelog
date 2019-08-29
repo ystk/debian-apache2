@@ -1,3 +1,15 @@
+apache2 (2.4.10-10+deb8u15) jessie-security; urgency=high
+
+  * Non-maintainer upload by the LTS team.
+  * Fix CVE-2019-10092:
+    Matei "Mal" Badanoiu reported a limited cross-site scripting
+    vulnerability in the mod_proxy error page.
+  * Fix CVE-2019-10098:
+    Yukitsugu Sasaki reported a potential open redirect vulnerability in the
+    mod_rewrite module.
+
+ -- Markus Koschany <apo@debian.org>  Wed, 28 Aug 2019 15:01:48 +0200
+
 apache2 (2.4.10-10+deb8u14) jessie-security; urgency=medium
 
   * Non-maintainer upload by the LTS Security Team.
