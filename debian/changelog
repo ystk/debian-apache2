@@ -1,3 +1,12 @@
+apache2 (2.4.10-10+deb8u16) jessie-security; urgency=high
+
+  * Non-maintainer upload by the LTS team.
+  * Fix incomplete fix for CVE-2019-10092. Revert the old patch that introduced
+    a new CSRF protection but also caused a small regression. (Closes: #941202)
+    Use the correct patch from upstream. https://svn.apache.org/r1864191
+
+ -- Markus Koschany <apo@debian.org>  Mon, 30 Sep 2019 21:21:12 +0200
+
 apache2 (2.4.10-10+deb8u15) jessie-security; urgency=high
 
   * Non-maintainer upload by the LTS team.
