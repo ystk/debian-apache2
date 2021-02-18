@@ -1,3 +1,11 @@
+apache2 (2.4.10-10+deb8u17) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS team.
+  * Use r->useragent_addr as the root trusted address for verifying.
+    (Fixes: CVE-2020-11985)
+
+ -- Utkarsh Gupta <utkarsh@debian.org>  Sun, 30 Aug 2020 19:50:19 +0530
+
 apache2 (2.4.10-10+deb8u16) jessie-security; urgency=high
 
   * Non-maintainer upload by the LTS team.
