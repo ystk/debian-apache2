@@ -1,3 +1,16 @@
+apache2 (2.4.10-10+deb8u18) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS Team.
+  * Backport patches:
+    - CVE-2021-30641: unexpected URL matching with 'MergeSlashes OFF'
+    - CVE-2021-26691: mod_session response handling heap overflow
+    - CVE-2021-26690: mod_session NULL pointer dereference
+    - CVE-2020-35452: mod_auth_digest stack overflow
+    - CVE-2020-1927: mod_rewrite open redirect
+    - CVE-2020-1934: mod_proxy_ftp uninitialized
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 09 Jul 2021 10:21:56 +0200
+
 apache2 (2.4.10-10+deb8u17) jessie-security; urgency=medium
 
   * Non-maintainer upload by the ELTS team.
