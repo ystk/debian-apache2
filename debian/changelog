@@ -1,3 +1,17 @@
+apache2 (2.4.10-10+deb8u19) jessie-security; urgency=high
+
+  * Non-maintainer upload by the ELTS Security Team.
+  * CVE-2021-34798: malformed requests may cause the server to dereference
+    a NULL pointer.
+  * CVE-2021-39275: ap_escape_quotes() may write beyond the end of a
+    buffer when given malicious input. No included modules pass untrusted
+    data to these functions, but third-party / external modules may.
+  * CVE-2021-40438: a crafted request uri-path can cause mod_proxy to
+    forward the request to an origin server choosen by the remote user.
+  * Backport some DEP-8 tests from stretch.
+
+ -- Sylvain Beucler <beuc@debian.org>  Sat, 02 Oct 2021 15:52:41 +0200
+
 apache2 (2.4.10-10+deb8u18) jessie-security; urgency=medium
 
   * Non-maintainer upload by the ELTS Team.
