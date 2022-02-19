@@ -1,3 +1,13 @@
+apache2 (2.4.10-10+deb8u20) jessie-security; urgency=high
+
+  * Non-maintainer upload by the ELTS Team.
+  * CVE-2021-44224
+    Fix possible NULL dereference or SSRF in forward proxy configurations
+  * CVE-2021-44790
+    lua: improve error handling
+
+ -- Thorsten Alteholz <debian@alteholz.de>  Sat, 19 Feb 2022 12:03:02 +0100
+
 apache2 (2.4.10-10+deb8u19) jessie-security; urgency=high
 
   * Non-maintainer upload by the ELTS Security Team.
