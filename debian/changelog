@@ -1,3 +1,10 @@
+apache2 (2.4.10-10+deb8u21) jessie-security; urgency=high
+
+  * Non-maintainer upload by the ELTS Team.
+  * fix error with symbol names in mod_proxy
+
+ -- Thorsten Alteholz <debian@alteholz.de>  Sun, 20 Feb 2022 10:03:02 +0100
+
 apache2 (2.4.10-10+deb8u20) jessie-security; urgency=high
 
   * Non-maintainer upload by the ELTS Team.
