@@ -1,3 +1,13 @@
+apache2 (2.4.10-10+deb8u22) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS team.
+  * CVE-2022-22719: denial of service in mod_lua via crafted request body.
+  * CVE-2022-22720: HTTP request smuggling.
+  * CVE-2022-22721: integer overflow leading to buffer overflow write.
+  * CVE-2022-23943: heap memory overwrite via crafted data in mod_sed.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 18 Mar 2022 13:56:21 +0100
+
 apache2 (2.4.10-10+deb8u21) jessie-security; urgency=high
 
   * Non-maintainer upload by the ELTS Team.
