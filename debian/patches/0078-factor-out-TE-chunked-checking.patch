@@ -1,0 +1,147 @@
+From: Eric Covener <covener@apache.org>
+Date: Fri, 26 Apr 2024 14:37:07 +0000
+Subject: factor out TE=chunked checking
+
+origin: https://github.com/apache/httpd/commit/c1ac12fa3b94bf1aabf16acad38afdb4198f8f23.patch
+git-svn-id: https://svn.apache.org/repos/asf/httpd/httpd/trunk@1873748 13f79535-47bb-0310-9956-ffa450edef68
+---
+ include/httpd.h              |  9 +++++++++
+ modules/http/http_filters.c  |  3 +--
+ modules/http/http_protocol.c |  5 ++---
+ server/protocol.c            |  3 +--
+ server/util.c                | 44 +++++++++++++++++++++++++++++++++++++++-----
+ 5 files changed, 52 insertions(+), 12 deletions(-)
+
+diff --git a/include/httpd.h b/include/httpd.h
+index fba77a0..ece7ec3 100644
+--- a/include/httpd.h
++++ b/include/httpd.h
+@@ -2320,6 +2320,15 @@ AP_DECLARE(int) ap_cstr_casecmp(const char *s1, const char *s2);
+  */
+ AP_DECLARE(int) ap_cstr_casecmpn(const char *s1, const char *s2, apr_size_t n);
+ 
++/**
++ * Determine if the final Transfer-Encoding is "chunked".
++ *
++ * @param p The pool to allocate from
++ * @param line the header field-value to scan
++ * @return 1 if the last Transfer-Encoding is "chunked", else 0
++ */
++AP_DECLARE(int) ap_is_chunked(apr_pool_t *p, const char *line);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/modules/http/http_filters.c b/modules/http/http_filters.c
+index c71398b..1fa306f 100644
+--- a/modules/http/http_filters.c
++++ b/modules/http/http_filters.c
+@@ -379,8 +379,7 @@ apr_status_t ap_http_filter(ap_filter_t *f, apr_bucket_brigade *b,
+         lenp = apr_table_get(f->r->headers_in, "Content-Length");
+ 
+         if (tenc) {
+-            if (strcasecmp(tenc, "chunked") == 0 /* fast path */
+-                    || ap_find_last_token(f->r->pool, tenc, "chunked")) {
++            if (ap_is_chunked(f->r->pool, tenc)) {
+                 ctx->state = BODY_CHUNK;
+             }
+             else if (f->r->proxyreq == PROXYREQ_RESPONSE) {
+diff --git a/modules/http/http_protocol.c b/modules/http/http_protocol.c
+index 2743dc8..6f2afbc 100644
+--- a/modules/http/http_protocol.c
++++ b/modules/http/http_protocol.c
+@@ -238,10 +238,9 @@ AP_DECLARE(int) ap_set_keepalive(request_rec *r)
+             || (r->status == HTTP_NO_CONTENT)
+             || r->header_only
+             || apr_table_get(r->headers_out, "Content-Length")
+-            || ap_find_last_token(r->pool,
++            || ap_is_chunked(r->pool,
+                                   apr_table_get(r->headers_out,
+-                                                "Transfer-Encoding"),
+-                                  "chunked")
++                                                "Transfer-Encoding"))
+             || ((r->proto_num >= HTTP_VERSION(1,1))
+                 && (r->chunked = 1))) /* THIS CODE IS CORRECT, see above. */
+         && r->server->keep_alive
+diff --git a/server/protocol.c b/server/protocol.c
+index d25a8bf..5892bc3 100644
+--- a/server/protocol.c
++++ b/server/protocol.c
+@@ -1333,8 +1333,7 @@ request_rec *ap_read_request(conn_rec *conn)
+              * the final encoding ...; the server MUST respond with the 400
+              * (Bad Request) status code and then close the connection".
+              */
+-            if (!(strcasecmp(tenc, "chunked") == 0 /* fast path */
+-                    || ap_find_last_token(r->pool, tenc, "chunked"))) {
++            if (!ap_is_chunked(r->pool, tenc)) {
+                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(02539)
+                               "client sent unknown Transfer-Encoding "
+                               "(%s): %s", tenc, r->uri);
+diff --git a/server/util.c b/server/util.c
+index 4f4930c..7d09698 100644
+--- a/server/util.c
++++ b/server/util.c
+@@ -1536,14 +1536,13 @@ AP_DECLARE(int) ap_find_token(apr_pool_t *p, const char *line, const char *tok)
+     }
+ }
+ 
+-
+-AP_DECLARE(int) ap_find_last_token(apr_pool_t *p, const char *line,
+-                                   const char *tok)
++static const char *find_last_token(apr_pool_t *p, const char *line,
++                            const char *tok)
+ {
+     int llen, tlen, lidx;
+ 
+     if (!line)
+-        return 0;
++        return NULL;
+ 
+     llen = strlen(line);
+     tlen = strlen(tok);
+@@ -1551,9 +1550,44 @@ AP_DECLARE(int) ap_find_last_token(apr_pool_t *p, const char *line,
+ 
+     if (lidx < 0 ||
+         (lidx > 0 && !(apr_isspace(line[lidx - 1]) || line[lidx - 1] == ',')))
++        return NULL;
++
++    if (ap_cstr_casecmpn(&line[lidx], tok, tlen) == 0) { 
++        return &line[lidx];
++    }
++   return NULL;
++}
++
++AP_DECLARE(int) ap_find_last_token(apr_pool_t *p, const char *line,
++                                   const char *tok)
++{
++    return find_last_token(p, line, tok) != NULL;
++}
++
++AP_DECLARE(int) ap_is_chunked(apr_pool_t *p, const char *line)
++{
++    const char *s;
++
++    if (!line) 
+         return 0;
++    if (!ap_cstr_casecmp(line, "chunked")) { 
++        return 1;
++    }
+ 
+-    return (strncasecmp(&line[lidx], tok, tlen) == 0);
++    s = find_last_token(p, line, "chunked");
++
++    if (!s) return 0;
++ 
++    /* eat spaces right-to-left to see what precedes "chunked" */
++    while (--s > line) { 
++        if (*s != ' ') break;
++    }
++
++    /* found delim, or leading ws (input wasn't parsed by httpd as a header) */
++    if (*s == ',' || *s == ' ') { 
++        return 1;
++    }
++    return 0;
+ }
+ 
+ AP_DECLARE(char *) ap_escape_shell_cmd(apr_pool_t *p, const char *str)
