@@ -77,3 +77,5 @@ CVE-2022-37436.patch
 0077-CVE-2023-38709-import-missing-functionnality.patch
 0078-factor-out-TE-chunked-checking.patch
 0079-SECURITY-CVE-2024-24795-Apache-HTTP-Server-HTTP-Resp.patch
+0080-Backport-Enforce-consistently-no-response-body-with-.patch
+0081-CVE-2023-38709-header-validation-after-content-are-e.patch

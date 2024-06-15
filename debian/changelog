@@ -1,3 +1,12 @@
+apache2 (2.4.10-10+deb8u27) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS team.
+  * Fix CVE-2023-38709: Faulty input validation in the core
+    of Apache allowed malicious or exploitable
+    backend/content generators to split HTTP responses.
+
+ -- Bastien Roucariès <rouca@debian.org>  Sun, 26 May 2024 20:06:12 +0000
+
 apache2 (2.4.10-10+deb8u26) jessie-security; urgency=medium
 
   * Non-maintainer upload by the ELTS team.
