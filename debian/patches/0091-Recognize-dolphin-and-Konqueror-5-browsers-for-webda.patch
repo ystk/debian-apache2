@@ -1,0 +1,24 @@
+From: Michal Maloszewski <michal.maloszewski@canonical.com>
+Date: Fri, 12 Jul 2024 08:36:51 +0000
+Subject: Recognize dolphin and Konqueror/5 browsers for webdav
+
+Without these settings, these browsers will be sent redirects on
+URLs for directories specified without a trailing '/'.  That can
+prevent webdav DELETE operations from working.
+
+Bug: https://bz.apache.org/bugzilla/show_bug.cgi?id=67039
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/apache2/+bug/1927742
+---
+ docs/conf/extra/httpd-dav.conf.in | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/docs/conf/extra/httpd-dav.conf.in b/docs/conf/extra/httpd-dav.conf.in
+index f1d35e0..3a52544 100644
+--- a/docs/conf/extra/httpd-dav.conf.in
++++ b/docs/conf/extra/httpd-dav.conf.in
+@@ -48,3 +48,5 @@ BrowserMatch "^gnome-vfs/1.0" redirect-carefully
+ BrowserMatch "^XML Spy" redirect-carefully
+ BrowserMatch "^Dreamweaver-WebDAV-SCM1" redirect-carefully
+ BrowserMatch " Konqueror/4" redirect-carefully
++BrowserMatch " Konqueror/5" redirect-carefully
++BrowserMatch " dolphin/" redirect-carefully

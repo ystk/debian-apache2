@@ -1,3 +1,32 @@
+apache2 (2.4.10-10+deb8u28) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS team.
+  * Fix CVE-2024-38476: SSRF or local script execution via
+    backend applications whose response headers are malicious
+    or exploitable
+  * Fix CVE-2024-38477: a NULL pointer dereference was found in
+    mod_proxy allowing an attacker to crash the server via
+    a malicious request.
+  * Fix CVE-2024-38573: A potential SSRF in mod_rewrite allowed an
+    attacker to cause unsafe RewriteRules to unexpectedly
+    setup URL's to be handled by mod_proxy.
+  * Fix CVE-2024-39884: A regression of CVE-2024-38476 in the core of Apache
+    HTTP Server ignores some use of the legacy content-type based
+    configuration of handlers. "AddType" and similar configuration,
+    under some circumstances where files are requested indirectly,
+    result in source code disclosure of local content. For example,
+    PHP scripts may be served instead of interpreted.
+  * Fix CVE-2024-40725: A partial fix for CVE-2024-38476 in the core of
+    Apache HTTP Server ignores some use of the legacy content-type based
+    configuration of handlers. "AddType" and similar configuration,
+    under some circumstances where files are requested indirectly,
+    result in source code disclosure of local content. For example,
+    PHP scripts may be served instead of interpreted.
+  * Recognize dolphin and Konqueror/5 browsers for webdav
+    (LP: #1927742)
+
+ -- Bastien Roucariès <rouca@debian.org>  Wed, 21 Aug 2024 18:34:39 +0000
+
 apache2 (2.4.10-10+deb8u27) jessie-security; urgency=medium
 
   * Non-maintainer upload by the ELTS team.

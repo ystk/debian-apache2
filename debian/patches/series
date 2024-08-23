@@ -79,3 +79,13 @@ CVE-2022-37436.patch
 0079-SECURITY-CVE-2024-24795-Apache-HTTP-Server-HTTP-Resp.patch
 0080-Backport-Enforce-consistently-no-response-body-with-.patch
 0081-CVE-2023-38709-header-validation-after-content-are-e.patch
+0082-CVE-2024-38476-depends-mod_dav_fs-etag-handling-shou.patch
+0083-CVE-2024-38476-add-ap_set_content_type_ex-to-differe.patch
+0084-1-4-CVE-2024-39884-maintain-trusted-flag.patch
+0085-2-4-CVE-2024-39884-Always-trust-content-types-that-w.patch
+0086-3-4-CVE-2024-39884-Follow-up-to-r1918814-Always-trus.patch
+0087-4-4-CVE-2024-39884-Follow-up-to-r1918814-Strings-are.patch
+0088-CVE-2024-40725.patch
+0089-CVE-2024-38477-validate-hostname.patch
+0090-CVE-2024-39573-block-inadvertent-subst-of-special-fi.patch
+0091-Recognize-dolphin-and-Konqueror-5-browsers-for-webda.patch
