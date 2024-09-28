@@ -1,0 +1,79 @@
+From: Eric Covener <covener@apache.org>
+Date: Thu, 26 Sep 2024 08:05:59 +0000
+Subject: backport of PR60009: RewriteRule local prefix checking update
+
+mod_rewrite: When a substitution is a fully qualified URL, and the
+scheme/host/port matches the current virtual host, stop interpreting the
+path component as a local path just because the first component of the
+path exists in the filesystem.  Adds RewriteOption "LegacyPrefixDocRoot"
+to revert to previous behavior. PR60009.
+
+[ELTS] needed for fixing CVE-2024-3847{4,5}
+
+Submitted By: Hank Ibell <hwibell gmail.com>
+
+origin: backport, https://github.com/apache/httpd/commit/1b461200ccbad9368846c140013ee3370df14749.patch
+---
+ modules/mappers/mod_rewrite.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/modules/mappers/mod_rewrite.c b/modules/mappers/mod_rewrite.c
+index c8ccefe..03b78b9 100644
+--- a/modules/mappers/mod_rewrite.c
++++ b/modules/mappers/mod_rewrite.c
+@@ -196,6 +196,7 @@ static const char* really_last_key = "rewrite_really_last";
+ #define OPTION_INHERIT_DOWN         1<<6
+ #define OPTION_INHERIT_DOWN_BEFORE  1<<7
+ #define OPTION_IGNORE_INHERIT       1<<8
++#define OPTION_LEGACY_PREFIX_DOCROOT (1<<10)
+ 
+ #ifndef RAND_MAX
+ #define RAND_MAX 32767
+@@ -837,8 +838,15 @@ static void reduce_uri(request_rec *r)
+ 
+         /* now check whether we could reduce it to a local path... */
+         if (ap_matches_request_vhost(r, host, port)) {
++            rewrite_server_conf *conf = 
++                ap_get_module_config(r->server->module_config, &rewrite_module);
+             rewritelog((r, 3, NULL, "reduce %s -> %s", r->filename, url));
+             r->filename = apr_pstrdup(r->pool, url);
++
++            /* remember that the uri was reduced */
++            if(!(conf->options & OPTION_LEGACY_PREFIX_DOCROOT)) {
++                apr_table_setn(r->notes, "mod_rewrite_uri_reduced", "true");
++            }
+         }
+     }
+ 
+@@ -2960,6 +2968,9 @@ static const char *cmd_rewriteoptions(cmd_parms *cmd,
+         else if (!strcasecmp(w, "mergebase")) {
+             options |= OPTION_MERGEBASE;
+         }
++        else if (!strcasecmp(w, "legacyprefixdocroot")) {
++            options |= OPTION_LEGACY_PREFIX_DOCROOT;
++        }
+         else {
+             return apr_pstrcat(cmd->pool, "RewriteOptions: unknown option '",
+                                w, "'", NULL);
+@@ -4750,6 +4761,7 @@ static int hook_uri2file(request_rec *r)
+         }
+         else {
+             /* it was finally rewritten to a local path */
++            const char *uri_reduced = NULL;
+ 
+             /* expand "/~user" prefix */
+ #if APR_HAS_USER
+@@ -4785,7 +4797,12 @@ static int hook_uri2file(request_rec *r)
+              * because we only do stat() on the first directory
+              * and this gets cached by the kernel for along time!
+              */
+-            if (!prefix_stat(r->filename, r->pool)) {
++
++            if(!(conf->options & OPTION_LEGACY_PREFIX_DOCROOT)) {
++                uri_reduced = apr_table_get(r->notes, "mod_rewrite_uri_reduced");
++            }
++
++            if (!prefix_stat(r->filename, r->pool) || uri_reduced != NULL) {
+                 int res;
+                 char *tmp = r->uri;
+ 

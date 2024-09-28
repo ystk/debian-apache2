@@ -1,0 +1,39 @@
+From: Eric Covener <covener@apache.org>
+Date: Fri, 12 Jul 2024 11:15:11 +0000
+Subject: short-circuit some kinds of looping in RewriteRule
+
+PR60478
+
+Submitted By: Jeff Wheelouse <apache wheelhouse.org>
+Committed By: covener
+
+[ELTS] needed for fixing CVE-2024-38474
+
+git-svn-id: https://svn.apache.org/repos/asf/httpd/httpd/branches/2.4.x@1774352 13f79535-47bb-0310-9956-ffa450edef68
+origin: https://github.com/apache/httpd/commit/48100751013bf08880bbe0c97cc99bae55b4d952.patch
+---
+ modules/mappers/mod_rewrite.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/modules/mappers/mod_rewrite.c b/modules/mappers/mod_rewrite.c
+index 03b78b9..078ab79 100644
+--- a/modules/mappers/mod_rewrite.c
++++ b/modules/mappers/mod_rewrite.c
+@@ -4300,6 +4300,17 @@ static int apply_rewrite_list(request_rec *r, apr_array_header_t *rewriterules,
+         rc = apply_rewrite_rule(p, ctx);
+ 
+         if (rc) {
++
++            /* Catch looping rules with pathinfo growing unbounded */
++            if ( strlen( r->filename ) > 2*r->server->limit_req_line ) {
++                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
++                              "RewriteRule '%s' and URI '%s' "
++                              "exceeded maximum length (%d)", 
++                              p->pattern, r->uri, 2*r->server->limit_req_line );
++                r->status = HTTP_INTERNAL_SERVER_ERROR;
++                return ACTION_STATUS;
++            }
++
+             /* Regardless of what we do next, we've found a match. Check to see
+              * if any of the request header fields were involved, and add them
+              * to the Vary field of the response.

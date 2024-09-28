@@ -89,3 +89,10 @@ CVE-2022-37436.patch
 0089-CVE-2024-38477-validate-hostname.patch
 0090-CVE-2024-39573-block-inadvertent-subst-of-special-fi.patch
 0091-Recognize-dolphin-and-Konqueror-5-browsers-for-webda.patch
+0092-Add-QSL-qslast-flag.patch
+0093-backport-of-PR60009-RewriteRule-local-prefix-checkin.patch
+0094-short-circuit-some-kinds-of-looping-in-RewriteRule.patch
+0095-CVE-2024-38474-tighten-up-prefix_stat-and-3f-handlin.patch
+0096-CVE-2024-38474-fix-up-logging-number.patch
+0097-CVE-2024-38474-regression-mod_rewrite-Better-questio.patch
+0098-CVE-2024-38474-regression-mod_rewrite-Follow-up-to-r.patch
