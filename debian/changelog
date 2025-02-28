@@ -1,3 +1,22 @@
+apache2 (2.4.10-10+deb8u30) jessie-security; urgency=medium
+
+  * Team upload by ELTS team
+  * Fix CVE-2024-38473:
+    Encoding problem in mod_proxy  allowed request URLs with
+    incorrect encoding to be sent to backend services,
+    potentially bypassing authentication via crafted requests
+  * Fix a regression for CVE-2024-38473 (Closes: #1076554):
+    Log error: AH01059: error parsing URL //: Invalid host/port
+    that broke sympa and configuration line
+    SetHandler "proxy:unix:/run/sympa/wwsympa.socket|fcgi://"
+  * Fix a regression for CVE-2024-38473 (Closes: #1079171):
+    After the update "アダプタ/index.php"
+    is encoded to
+    "%E3%82%A2%E3%83%80%E3%83%97%E3%82%BF/index.php"
+    in the filesystem.
+
+ -- Bastien Roucariès <rouca@debian.org>  Sat, 28 Dec 2024 13:55:56 +0000
+
 apache2 (2.4.10-10+deb8u29) jessie-security; urgency=medium
 
   * Non-maintainer upload by the ELTS team.

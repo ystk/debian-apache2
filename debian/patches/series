@@ -96,3 +96,10 @@ CVE-2022-37436.patch
 0096-CVE-2024-38474-fix-up-logging-number.patch
 0097-CVE-2024-38474-regression-mod_rewrite-Better-questio.patch
 0098-CVE-2024-38474-regression-mod_rewrite-Follow-up-to-r.patch
+0099-1-4-CVE-2024-38473-Merge-r1918550-from-trunk.patch
+0100-2-4-CVE-2024-38473-mod_proxy-Fixup-UDS-filename-for-.patch
+0101-3-4-CVE-2024-38473-Merge-r1918623-from-trunk.patch
+0102-4-4-CVE-2024-38473-factor-out-IS_SLASH-perdir-fix.patch
+0103-CVE-2024-38473-Regression-1-2-patch-1-2-mod_proxy-Av.patch
+0104-CVE-2024-38473-Regression-1-2-patch-2-2-mod_proxy-Av.patch
+0105-CVE-2024-38473-Regression-2-2-error-parsing-URL-with.patch
